@@ -9,10 +9,23 @@ import random
 from collections import Counter
 
 class BioVidDataset(Dataset):
-    def __init__(self, features_path, meta_path, subject_ids=None, transform=None, use_video_fallback=False):
+    def __init__(self, features_path, meta_path, subject_ids=None, transform=None, use_video_fallback=False, temporal_pooling='mean', flatten=True):
+        """
+        Args:
+            features_path: Path to npy feature folder
+            meta_path: Path to meta.json
+            subject_ids: list/set of subject ids to include
+            transform: Optional transforms
+            use_video_fallback: (unused)
+            temporal_pooling: 'mean', 'max', or 'sample'
+                'sample' will randomly select 5 frames (pad with zeros if not enough)
+            flatten: If True, return features as 1D. If False, return spatial/temporal shape as processed.
+        """
         self.features_path = features_path
         self.transform = transform
         self.use_video_fallback = use_video_fallback
+        self.temporal_pooling = temporal_pooling
+        self.flatten = flatten
         self.samples = []
         # Read meta.json and filter by biovid + subject_ids
         with open(meta_path, 'r') as f:
@@ -28,10 +41,38 @@ class BioVidDataset(Dataset):
                         'label': label,
                     })
         self.samples.sort(key=lambda x: x['fname'])  # Deterministic order
-        self.example_shape = None
+        self._example_shape = None
         if self.samples:
             arr = np.load(os.path.join(self.features_path, self.samples[0]['fname']))
-            self.example_shape = arr.shape
+            arr = torch.from_numpy(arr).float()
+            # Apply pooling logic for true shape after processing
+            if self.temporal_pooling == 'mean':
+                arr = arr.mean(dim=1)
+            elif self.temporal_pooling == 'max':
+                arr = arr.max(dim=1).values
+            elif self.temporal_pooling == 'sample':
+                T_target = 5
+                T_actual = arr.shape[1]
+                if T_actual == T_target:
+                    arr = arr
+                elif T_actual > T_target:
+                    start = torch.randint(0, T_actual - T_target + 1, (1,)).item()
+                    arr = arr[:, start:start+T_target, ...]
+                else:
+                    pad_shape = list(arr.shape)
+                    pad_shape[1] = T_target - T_actual
+                    pad = torch.zeros(pad_shape, dtype=arr.dtype, device=arr.device)
+                    arr = torch.cat([arr, pad], dim=1)
+            if self.flatten:
+                arr = arr.view(-1)
+            self._example_shape = tuple(arr.shape)
+
+    @property
+    def example_shape(self):
+        """
+        Shape of each processed feature sample (after temporal pooling and flattening if enabled), e.g. (32768,) or (16, 5, 128, 128)
+        """
+        return self._example_shape
 
     def __len__(self):
         return len(self.samples)
@@ -43,6 +84,29 @@ class BioVidDataset(Dataset):
             arr = np.load(npy_path)
             assert arr.ndim == 4, f"Expected 4D tensor [C,T,H,W], got {arr.shape} for {sample['fname']}"
             arr = torch.from_numpy(arr).float()
+            # --- Temporal Pooling ---
+            if self.temporal_pooling == 'mean':
+                arr = arr.mean(dim=1)  # [C,H,W]
+            elif self.temporal_pooling == 'max':
+                arr = arr.max(dim=1).values # [C,H,W]
+            elif self.temporal_pooling == 'sample':
+                T_target = 5
+                T_actual = arr.shape[1]
+                if T_actual == T_target:
+                    arr = arr
+                elif T_actual > T_target:
+                    start = torch.randint(0, T_actual - T_target + 1, (1,)).item()
+                    arr = arr[:, start:start+T_target, ...]
+                else:
+                    # Pad with zeros at the end
+                    pad_shape = list(arr.shape)
+                    pad_shape[1] = T_target - T_actual
+                    pad = torch.zeros(pad_shape, dtype=arr.dtype, device=arr.device)
+                    arr = torch.cat([arr, pad], dim=1)
+            else:
+                raise ValueError(f"Invalid temporal_pooling: {self.temporal_pooling}")
+            if self.flatten:
+                arr = arr.view(-1)
         else:
             if self.use_video_fallback:
                 basename = os.path.splitext(sample['fname'])[0]
@@ -69,7 +133,7 @@ class BioVidDataset(Dataset):
         return s
 
 class BioVidDataModule(pl.LightningDataModule):
-    def __init__(self, features_path, meta_path, batch_size=32, num_workers=4, split_ratio=0.8, seed=42, use_video_fallback=False):
+    def __init__(self, features_path, meta_path, batch_size=32, num_workers=4, split_ratio=0.8, seed=42, use_video_fallback=False, temporal_pooling='mean', flatten=True):
         super().__init__()
         self.features_path = features_path
         self.meta_path = meta_path
@@ -78,6 +142,8 @@ class BioVidDataModule(pl.LightningDataModule):
         self.split_ratio = split_ratio
         self.seed = seed
         self.use_video_fallback = use_video_fallback
+        self.temporal_pooling = temporal_pooling
+        self.flatten = flatten
 
     def setup(self, stage: Optional[str] = None):
         # Gather all biovid subject_ids
@@ -92,14 +158,30 @@ class BioVidDataModule(pl.LightningDataModule):
         train_subjects = set(subject_ids_shuffled[:n_train])
         val_subjects = set(subject_ids_shuffled[n_train:])
         # Build datasets
-        self.train_dataset = BioVidDataset(self.features_path, self.meta_path, subject_ids=train_subjects, use_video_fallback=self.use_video_fallback)
-        self.val_dataset = BioVidDataset(self.features_path, self.meta_path, subject_ids=val_subjects, use_video_fallback=self.use_video_fallback)
+        self.train_dataset = BioVidDataset(
+            self.features_path, self.meta_path, subject_ids=train_subjects,
+            use_video_fallback=self.use_video_fallback, temporal_pooling=self.temporal_pooling,
+            flatten=self.flatten)
+        self.val_dataset = BioVidDataset(
+            self.features_path, self.meta_path, subject_ids=val_subjects,
+            use_video_fallback=self.use_video_fallback, temporal_pooling=self.temporal_pooling,
+            flatten=self.flatten)
 
     def train_dataloader(self):
         return DataLoader(self.train_dataset, batch_size=self.batch_size, num_workers=self.num_workers, shuffle=True)
 
     def val_dataloader(self):
         return DataLoader(self.val_dataset, batch_size=self.batch_size, num_workers=self.num_workers, shuffle=False)
+
+    @property
+    def example_shape(self):
+        """
+        Shape of feature for model input, provided by train_dataset.
+        """
+        if hasattr(self, 'train_dataset') and self.train_dataset is not None:
+            return self.train_dataset.example_shape
+        else:
+            return None
 
     def __repr__(self):
         s = f"<BioVidDataModule: batch_size={self.batch_size}, num_workers={self.num_workers}, split_ratio={self.split_ratio}, seed={self.seed}>\n"

@@ -16,6 +16,7 @@ This README describes the BioVid and Syracuse PyTorch Lightning DataModules in t
   - All available `subject_id` values are shuffled with a deterministic random seed.
   - Split into training and validation based on `split_ratio` (default: 80% train, 20% val).
   - No subject crosses between splits.
+- **Note:** By the design of the BioVid experiment, class distributions are inherently balanced across subjects/sessions, so explicit class balancing in the data split is not needed.
 - **Arguments:**
   - `batch_size`, `num_workers`: DataLoader settings.
   - `split_ratio`: Ratio of train subjects (0-1).

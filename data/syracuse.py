@@ -16,11 +16,16 @@ from sklearn.model_selection import StratifiedKFold
 class SyracuseDataset(Dataset):
     """
     PyTorch dataset for Syracuse video features with pain levels and optional class label thresholds.
+    Args:
+        temporal_pooling: 'mean', 'max', or 'sample'.
+            'sample' will randomly select 4 frames (pad with zeros if not enough).
     """
-    def __init__(self, meta_path, source_filter, video_ids=None, config_path=None, task=None, thresholds=None, transform=None, set_name=None):
+    def __init__(self, meta_path, source_filter, video_ids=None, config_path=None, task=None, thresholds=None, transform=None, set_name=None, temporal_pooling='mean', flatten=True):
         self.meta_path = meta_path
         self.transform = transform
         self.set_name = set_name
+        self.temporal_pooling = temporal_pooling
+        self.flatten = flatten
         with open(meta_path, 'r') as f:
             meta = json.load(f)
         if config_path is not None:
@@ -66,10 +71,31 @@ class SyracuseDataset(Dataset):
             if invalid:
                 raise ValueError(f"Found non-integer class_label(s) at indices {invalid[:10]} (showing up to 10): "
                                  f"{[self.samples[i]['class_label'] for i in invalid[:10]]}")
-        self.example_shape = None
+        self._example_shape = None
         if self.samples:
             arr = np.load(os.path.join(os.path.dirname(meta_path), self.samples[0]['fname']))
-            self.example_shape = arr.shape
+            arr = torch.from_numpy(arr).float()
+            # Apply pooling logic for true shape after processing
+            if self.temporal_pooling == 'mean':
+                arr = arr.mean(dim=1)
+            elif self.temporal_pooling == 'max':
+                arr = arr.max(dim=1).values
+            elif self.temporal_pooling == 'sample':
+                T_target = 4
+                T_actual = arr.shape[1]
+                if T_actual == T_target:
+                    arr = arr
+                elif T_actual > T_target:
+                    start = torch.randint(0, T_actual - T_target + 1, (1,)).item()
+                    arr = arr[:, start:start+T_target, ...]
+                else:
+                    pad_shape = list(arr.shape)
+                    pad_shape[1] = T_target - T_actual
+                    pad = torch.zeros(pad_shape, dtype=arr.dtype, device=arr.device)
+                    arr = torch.cat([arr, pad], dim=1)
+            if self.flatten:
+                arr = arr.view(-1)
+            self._example_shape = tuple(arr.shape)
         num_clips = len(self.samples)
         num_videos = len(set(x['video_id'] for x in self.samples))
         name_str = f" [{self.set_name}]" if self.set_name else ""
@@ -105,6 +131,28 @@ class SyracuseDataset(Dataset):
         x = self.samples[idx]
         arr = np.load(os.path.join(os.path.dirname(self.meta_path), x['fname']))
         arr = torch.from_numpy(arr).float()
+        # --- Temporal Pooling ---
+        if self.temporal_pooling == 'mean':
+            arr = arr.mean(dim=1) # [C,H,W]
+        elif self.temporal_pooling == 'max':
+            arr = arr.max(dim=1).values
+        elif self.temporal_pooling == 'sample':
+            T_target = 4
+            T_actual = arr.shape[1]
+            if T_actual == T_target:
+                arr = arr
+            elif T_actual > T_target:
+                start = torch.randint(0, T_actual - T_target + 1, (1,)).item()
+                arr = arr[:, start:start+T_target, ...]
+            else:
+                pad_shape = list(arr.shape)
+                pad_shape[1] = T_target - T_actual
+                pad = torch.zeros(pad_shape, dtype=arr.dtype, device=arr.device)
+                arr = torch.cat([arr, pad], dim=1)
+        else:
+            raise ValueError(f"Invalid temporal_pooling: {self.temporal_pooling}")
+        if self.flatten:
+            arr = arr.view(-1)
         if self.transform:
             arr = self.transform(arr)
         ret = [arr, x['pain_level']]
@@ -120,20 +168,30 @@ class SyracuseDataset(Dataset):
 
     def __repr__(self):
         s = f'<SyracuseDataset: {len(self)} samples'
-        if self.example_shape:
-            s += f', sample shape={self.example_shape}'
+        if self._example_shape:
+            s += f', sample shape={self._example_shape}'
         if self.samples and self.samples[0]['class_label'] is not None:
             s += f', class dist={dict(self.label_distribution())}'
         s += '>'
         return s
 
+    @property
+    def example_shape(self):
+        """
+        Shape of processed feature after pooling; e.g. (16, 4, 128, 128) for 'sample', (16, 128, 128) for 'mean'.
+        """
+        return self._example_shape
+
 class SyracuseDataModule(pl.LightningDataModule):
     """
     PyTorch Lightning DataModule for the Syracuse dataset with pain level as ground truth and YAML-configurable classification.
     Provides cross-validation splits and optional balanced sampling for classification.
+    Args:
+        temporal_pooling: 'mean', 'max', or 'sample'.
+            'sample' randomly picks 4 frames, pads if short.
     """
     def __init__(self, meta_path, config_path, batch_size=32, num_workers=4, cv_fold=3, seed=42,
-                 balanced_sampling=False, transform=None):
+                 balanced_sampling=False, transform=None, temporal_pooling='mean', flatten=True):
         super().__init__()
         self.meta_path = meta_path
         self.config_path = config_path
@@ -146,6 +204,8 @@ class SyracuseDataModule(pl.LightningDataModule):
         self.seed = seed
         self.balanced_sampling = balanced_sampling
         self.transform = transform
+        self.temporal_pooling = temporal_pooling
+        self.flatten = flatten
         self.cfg = None
         self.train_dataset = None
         self.val_dataset = None
@@ -209,7 +269,9 @@ class SyracuseDataModule(pl.LightningDataModule):
             video_ids=train_vids,
             config_path=self.config_path,
             transform=self.transform,
-            set_name="TRAIN"
+            set_name="TRAIN",
+            temporal_pooling=self.temporal_pooling,
+            flatten=self.flatten
         )
         self.val_dataset = SyracuseDataset(
             meta_path=self.meta_path,
@@ -217,7 +279,9 @@ class SyracuseDataModule(pl.LightningDataModule):
             video_ids=val_vids,
             config_path=self.config_path,
             transform=self.transform,
-            set_name="VAL"
+            set_name="VAL",
+            temporal_pooling=self.temporal_pooling,
+            flatten=self.flatten
         )
         print(f"[INFO] Train class dist: {self.train_dataset.label_distribution()}")
         print(f"[INFO] Val class dist: {self.val_dataset.label_distribution()}")
@@ -252,6 +316,16 @@ class SyracuseDataModule(pl.LightningDataModule):
         if hasattr(self, 'val_dataset'):
             s += f"Val: {self.val_dataset}"
         return s
+
+    @property
+    def example_shape(self):
+        """
+        Shape of feature for model input, provided by train_dataset.
+        """
+        if hasattr(self, 'train_dataset') and self.train_dataset is not None:
+            return self.train_dataset.example_shape
+        else:
+            return None
 
 # Usage example:
 # dm = SyracuseDataModule(meta_path="/home/nbi/marlin/wan_features/meta.json", config_path="config_pain/5class.yaml", cv_fold=0, balanced_sampling=True)

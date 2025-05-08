@@ -1,0 +1,36 @@
+# Sample configuration YAML for MultiTaskCoralClassifier
+# This file provides a clean, structured template for all core hyperparameters.
+
+model:
+  vae_res: 128
+  input_dim: 768                 # (int) Input dimensionality (feature size)
+  num_pain_classes: 5            # (int) Ordinal classes for pain
+  num_stimulus_classes: 5        # (int) Ordinal classes for stimulus
+  encoder_hidden_dims: [512,256] # (list[int]) Hidden layers for encoder MLP (or [] / null for linear encoder)
+  encoder_dropout: 0.5           # (float) Dropout rate in encoder
+
+optimizer:
+  optimizer_name: AdamW          # (str) Optimizer type: 'Adam' or 'AdamW'
+  learning_rate: 0.0001          # (float) Initial learning rate
+  weight_decay: 0.0              # (float) Weight decay for optimizer
+
+loss:
+  pain_loss_weight: 1.0          # (float) Relative loss weight for pain task
+  stim_loss_weight: 1.0          # (float) Relative loss weight for stim task
+  label_smoothing: 0.0           # (float) Label smoothing amount [0,1)
+  use_distance_penalty: false    # (bool) Penalize mistakes more for farther off predictions
+  focal_gamma:                   # (null/float) Focal loss gamma, if any
+  # class_weights: [1,1,1,1,1]    # (optional list) Per-class weighting (advanced)
+
+training:
+  batch_size: 64                 # (int) Training batch size
+  max_epochs: 75                 # (int) Number of training epochs
+  seed: 42                       # (int) Random seed for reproducibility
+  # Add other trainer/config options as needed
+
+# Example how you would load and use:
+# import yaml
+# with open('classifier/config_multi_task_coral.yaml','r') as f:
+#     config = yaml.safe_load(f)
+# hparams = {**config['model'], **config['optimizer'], **config['loss']}
+# module = MultiTaskCoralClassifier(**hparams) 
