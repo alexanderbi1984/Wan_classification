@@ -1,0 +1,119 @@
+import os
+import json
+import numpy as np
+import torch
+from torch.utils.data import Dataset, DataLoader
+import pytorch_lightning as pl
+from typing import Optional
+import random
+from collections import Counter
+
+class BioVidDataset(Dataset):
+    def __init__(self, features_path, meta_path, subject_ids=None, transform=None, use_video_fallback=False):
+        self.features_path = features_path
+        self.transform = transform
+        self.use_video_fallback = use_video_fallback
+        self.samples = []
+        # Read meta.json and filter by biovid + subject_ids
+        with open(meta_path, 'r') as f:
+            meta = json.load(f)
+        for fname, entry in meta.items():
+            if entry.get('source') == 'biovid':
+                subject_id = entry['subject_id']
+                label = entry['5_class_label']
+                if (subject_ids is None) or (subject_id in subject_ids):
+                    self.samples.append({
+                        'fname': fname,
+                        'subject_id': subject_id,
+                        'label': label,
+                    })
+        self.samples.sort(key=lambda x: x['fname'])  # Deterministic order
+        self.example_shape = None
+        if self.samples:
+            arr = np.load(os.path.join(self.features_path, self.samples[0]['fname']))
+            self.example_shape = arr.shape
+
+    def __len__(self):
+        return len(self.samples)
+
+    def __getitem__(self, idx):
+        sample = self.samples[idx]
+        npy_path = os.path.join(self.features_path, sample['fname'])
+        if os.path.exists(npy_path):
+            arr = np.load(npy_path)
+            assert arr.ndim == 4, f"Expected 4D tensor [C,T,H,W], got {arr.shape} for {sample['fname']}"
+            arr = torch.from_numpy(arr).float()
+        else:
+            if self.use_video_fallback:
+                basename = os.path.splitext(sample['fname'])[0]
+                for ext in ('mp4', 'avi'):
+                    vid_path = os.path.join(self.features_path, f"{basename}.{ext}")
+                    if os.path.exists(vid_path):
+                        raise NotImplementedError('Video loading not implemented yet.')
+                raise FileNotFoundError(f"No npy or video file for {sample['fname']}")
+            else:
+                raise FileNotFoundError(f"Feature file not found: {npy_path}")
+        if self.transform:
+            arr = self.transform(arr)
+        label = torch.tensor(sample['label'], dtype=torch.long)
+        return arr, sample['subject_id'], label
+
+    def label_distribution(self):
+        return Counter([s['label'] for s in self.samples])
+
+    def __repr__(self):
+        s = f"<BioVidDataset: {len(self)} samples"
+        if self.example_shape:
+            s += f", sample shape={self.example_shape}"
+        s += ">"
+        return s
+
+class BioVidDataModule(pl.LightningDataModule):
+    def __init__(self, features_path, meta_path, batch_size=32, num_workers=4, split_ratio=0.8, seed=42, use_video_fallback=False):
+        super().__init__()
+        self.features_path = features_path
+        self.meta_path = meta_path
+        self.batch_size = batch_size
+        self.num_workers = num_workers
+        self.split_ratio = split_ratio
+        self.seed = seed
+        self.use_video_fallback = use_video_fallback
+
+    def setup(self, stage: Optional[str] = None):
+        # Gather all biovid subject_ids
+        with open(self.meta_path, 'r') as f:
+            meta = json.load(f)
+        subject_ids = sorted({entry['subject_id'] for entry in meta.values() if entry.get('source') == 'biovid'})
+        # Deterministic shuffle by seed
+        rng = random.Random(self.seed)
+        subject_ids_shuffled = subject_ids[:]
+        rng.shuffle(subject_ids_shuffled)
+        n_train = int(len(subject_ids_shuffled) * self.split_ratio)
+        train_subjects = set(subject_ids_shuffled[:n_train])
+        val_subjects = set(subject_ids_shuffled[n_train:])
+        # Build datasets
+        self.train_dataset = BioVidDataset(self.features_path, self.meta_path, subject_ids=train_subjects, use_video_fallback=self.use_video_fallback)
+        self.val_dataset = BioVidDataset(self.features_path, self.meta_path, subject_ids=val_subjects, use_video_fallback=self.use_video_fallback)
+
+    def train_dataloader(self):
+        return DataLoader(self.train_dataset, batch_size=self.batch_size, num_workers=self.num_workers, shuffle=True)
+
+    def val_dataloader(self):
+        return DataLoader(self.val_dataset, batch_size=self.batch_size, num_workers=self.num_workers, shuffle=False)
+
+    def __repr__(self):
+        s = f"<BioVidDataModule: batch_size={self.batch_size}, num_workers={self.num_workers}, split_ratio={self.split_ratio}, seed={self.seed}>\n"
+        if hasattr(self, 'train_dataset'):
+            s += f"Train: {self.train_dataset}\n"
+            dist = self.train_dataset.label_distribution()
+            s += f"  Train label dist: {dict(dist)}\n"
+        if hasattr(self, 'val_dataset'):
+            s += f"Val: {self.val_dataset}\n"
+            dist = self.val_dataset.label_distribution()
+            s += f"  Val label dist: {dict(dist)}"
+        return s
+
+# Example usage:
+# dm = BioVidDataModule(features_path="/home/nbi/marlin/wan_features/", meta_path="/home/nbi/marlin/wan_features/meta.json")
+# dm.setup()
+# print(dm) 
