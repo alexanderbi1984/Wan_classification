@@ -20,7 +20,7 @@ class SyracuseDataset(Dataset):
         temporal_pooling: 'mean', 'max', or 'sample'.
             'sample' will randomly select 4 frames (pad with zeros if not enough).
     """
-    def __init__(self, meta_path, source_filter, video_ids=None, config_path=None, task=None, thresholds=None, transform=None, set_name=None, temporal_pooling='mean', flatten=True):
+    def __init__(self, meta_path, source_filter, video_ids=None, task="classification", thresholds=None, transform=None, set_name=None, temporal_pooling='mean', flatten=True):
         self.meta_path = meta_path
         self.transform = transform
         self.set_name = set_name
@@ -28,14 +28,10 @@ class SyracuseDataset(Dataset):
         self.flatten = flatten
         with open(meta_path, 'r') as f:
             meta = json.load(f)
-        if config_path is not None:
-            with open(config_path, 'r') as f:
-                cfg = yaml.safe_load(f)
-            self.task = cfg.get('task', task)
-            self.thresholds = cfg.get('thresholds', thresholds)
-        else:
-            self.task = task
-            self.thresholds = thresholds
+        
+        self.task = task
+        self.thresholds = thresholds
+
         self.samples = []
         self.source_counter = Counter()
         self.video_source_counter = Counter()
@@ -161,6 +157,7 @@ class SyracuseDataset(Dataset):
             assert isinstance(cl, int), f"class_label not int in __getitem__: {cl} (pain_level={x['pain_level']})"
             ret.append(torch.tensor(cl, dtype=torch.long))
         ret += [x['video_id'], x['clip_id']]
+        # print(f"sample: {x['fname']}, arr shape: {arr.shape}, label: {cl}")
         return tuple(ret)
 
     def label_distribution(self):
@@ -190,11 +187,12 @@ class SyracuseDataModule(pl.LightningDataModule):
         temporal_pooling: 'mean', 'max', or 'sample'.
             'sample' randomly picks 4 frames, pads if short.
     """
-    def __init__(self, meta_path, config_path, batch_size=32, num_workers=4, cv_fold=3, seed=42,
+    def __init__(self, meta_path, task: str = "classification", thresholds: list = None, batch_size=32, num_workers=4, cv_fold=3, seed=42,
                  balanced_sampling=False, transform=None, temporal_pooling='mean', flatten=True):
         super().__init__()
         self.meta_path = meta_path
-        self.config_path = config_path
+        self.task = task
+        self.thresholds = thresholds
         self.batch_size = batch_size
         self.num_workers = num_workers
         # cv_fold specifies which split to use for validation:
@@ -206,7 +204,6 @@ class SyracuseDataModule(pl.LightningDataModule):
         self.transform = transform
         self.temporal_pooling = temporal_pooling
         self.flatten = flatten
-        self.cfg = None
         self.train_dataset = None
         self.val_dataset = None
 
@@ -215,8 +212,6 @@ class SyracuseDataModule(pl.LightningDataModule):
         Prepares the train/val datasets by stratified video CV split for classification,
         or by pseudo-stratified CV using uniform binning if regression. Augmentations assigned to train.
         """
-        with open(self.config_path, 'r') as f:
-            self.cfg = yaml.safe_load(f)
         meta_dir = os.path.dirname(self.meta_path)
         with open(self.meta_path, 'r') as f:
             meta = json.load(f)
@@ -224,17 +219,18 @@ class SyracuseDataModule(pl.LightningDataModule):
         orig_video_ids = sorted({e['video_id'] for e in originals})
         pain_per_vid = {e['video_id']: e['pain_level'] for e in originals}
 
-        task = self.cfg.get('task', 'classification')
-        if task == 'classification':
-            thresholds = self.cfg['thresholds']
+        if self.task == 'classification':
+            if self.thresholds is None:
+                raise ValueError("Thresholds must be provided for classification task in SyracuseDataModule.")
+            current_thresholds = self.thresholds
             def label_fn(pain):
-                for i, th in enumerate(thresholds):
+                for i, th in enumerate(current_thresholds):
                     if pain <= th:
                         return i
-                return len(thresholds)
+                return len(current_thresholds)
             split_vec = [label_fn(pain_per_vid[vid]) for vid in orig_video_ids]
             skf = StratifiedKFold(n_splits=3, random_state=self.seed, shuffle=True)
-        elif task == 'regression':
+        elif self.task == 'regression':
             # Always use uniform binning from 0-10 for pseudo-stratification
             n_bins = 5
             bin_edges = np.linspace(0, 10, n_bins+1)[1:]  # [2,4,6,8,10]
@@ -264,25 +260,30 @@ class SyracuseDataModule(pl.LightningDataModule):
         print(f"[DEBUG] train_vids: {len(train_vids)}; sample: {list(train_vids)[:5]}")
         print(f"[DEBUG] val_vids: {len(val_vids)}; sample: {list(val_vids)[:5]}")
         self.train_dataset = SyracuseDataset(
-            meta_path=self.meta_path,
-            source_filter={"syracuse_original", "syracuse_aug"},
+            self.meta_path,
+            source_filter=["syracuse_original", "syracuse_aug"],
             video_ids=train_vids,
-            config_path=self.config_path,
+            task=self.task,
+            thresholds=self.thresholds,
             transform=self.transform,
             set_name="TRAIN",
             temporal_pooling=self.temporal_pooling,
             flatten=self.flatten
         )
-        self.val_dataset = SyracuseDataset(
-            meta_path=self.meta_path,
-            source_filter={"syracuse_original"},
-            video_ids=val_vids,
-            config_path=self.config_path,
-            transform=self.transform,
-            set_name="VAL",
-            temporal_pooling=self.temporal_pooling,
-            flatten=self.flatten
-        )
+        if self.cv_fold < 3:
+            self.val_dataset = SyracuseDataset(
+                self.meta_path,
+                source_filter=["syracuse_original"],
+                video_ids=val_vids,
+                task=self.task,
+                thresholds=self.thresholds,
+                transform=self.transform,
+                set_name="VAL",
+                temporal_pooling=self.temporal_pooling,
+                flatten=self.flatten
+            )
+        else:
+            self.val_dataset = None
         print(f"[INFO] Train class dist: {self.train_dataset.label_distribution()}")
         print(f"[INFO] Val class dist: {self.val_dataset.label_distribution()}")
 
@@ -310,7 +311,7 @@ class SyracuseDataModule(pl.LightningDataModule):
                           shuffle=False, generator=generator)
 
     def __repr__(self):
-        s = f"<SyracuseDataModule: batch_size={self.batch_size}, num_workers={self.num_workers}, cv_fold={self.cv_fold}, config={os.path.basename(self.config_path)}>\n"
+        s = f"<SyracuseDataModule: batch_size={self.batch_size}, num_workers={self.num_workers}, cv_fold={self.cv_fold}, config={os.path.basename(self.meta_path)}>\n"
         if hasattr(self, 'train_dataset'):
             s += f"Train: {self.train_dataset}\n"
         if hasattr(self, 'val_dataset'):
@@ -328,11 +329,11 @@ class SyracuseDataModule(pl.LightningDataModule):
             return None
 
 # Usage example:
-# dm = SyracuseDataModule(meta_path="/home/nbi/marlin/wan_features/meta.json", config_path="config_pain/5class.yaml", cv_fold=0, balanced_sampling=True)
+# dm = SyracuseDataModule(meta_path="/home/nbi/marlin/wan_features/meta.json", task="classification", thresholds=[0, 2, 4, 6, 8], cv_fold=0, balanced_sampling=True)
 # dm.setup()
 # print(dm)
 
-# dm = SyracuseDataModule(meta_path="/home/nbi/marlin/wan_features/meta.json", config_path="config_pain/5class.yaml", cv_fold=0, debug_samples=100, balanced_sampling=True)
+# dm = SyracuseDataModule(meta_path="/home/nbi/marlin/wan_features/meta.json", task="classification", thresholds=[0, 2, 4, 6, 8], cv_fold=0, debug_samples=100, balanced_sampling=True)
 # dm.setup()
 # loader = dm.train_dataloader()
 # batch = next(iter(loader))

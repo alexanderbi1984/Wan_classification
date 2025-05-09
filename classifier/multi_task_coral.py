@@ -5,7 +5,7 @@ import pytorch_lightning as pl
 import torchmetrics
 import torch.optim as optim
 from typing import Union, List
-from torchmetrics.classification import CohenKappa
+from torchmetrics.classification import CohenKappa, ConfusionMatrix
 
 # --------------------------------------------------------------------
 # Multi-Task CORAL Lightning Module
@@ -121,12 +121,22 @@ class MultiTaskCoralClassifier(pl.LightningModule):
         self.val_stim_qwk = CohenKappa(task="multiclass", num_classes=self.hparams.num_stimulus_classes, weights='quadratic', **metric_args)
         self.test_stim_qwk = CohenKappa(task="multiclass", num_classes=self.hparams.num_stimulus_classes, weights='quadratic', **metric_args)
 
-        # Add Accuracy if desired
-        # self.train_pain_acc = torchmetrics.Accuracy(task="multiclass", num_classes=num_pain_classes, average='macro', **metric_args)
-        # self.val_pain_acc = torchmetrics.Accuracy(task="multiclass", num_classes=num_pain_classes, average='macro', **metric_args)
-        # self.test_pain_acc = torchmetrics.Accuracy(task="multiclass", num_classes=num_pain_classes, average='macro', **metric_args)
-        # # ... and similar for stimulus task
+        # --- Accuracy Metrics ---
+        self.train_pain_acc = torchmetrics.Accuracy(task="multiclass", num_classes=self.hparams.num_pain_classes, average='macro', **metric_args)
+        self.val_pain_acc = torchmetrics.Accuracy(task="multiclass", num_classes=self.hparams.num_pain_classes, average='macro', **metric_args)
+        self.test_pain_acc = torchmetrics.Accuracy(task="multiclass", num_classes=self.hparams.num_pain_classes, average='macro', **metric_args)
+        
+        self.train_stim_acc = torchmetrics.Accuracy(task="multiclass", num_classes=self.hparams.num_stimulus_classes, average='macro', **metric_args)
+        self.val_stim_acc = torchmetrics.Accuracy(task="multiclass", num_classes=self.hparams.num_stimulus_classes, average='macro', **metric_args)
+        self.test_stim_acc = torchmetrics.Accuracy(task="multiclass", num_classes=self.hparams.num_stimulus_classes, average='macro', **metric_args)
 
+        # --- Confusion Matrix Metrics (for final fold evaluation) ---
+        # Using normalize=None for raw counts. Will be computed manually after trainer.test()
+        metric_args_cm = {'dist_sync_on_step': False, 'normalize': None} 
+        if self.hparams.num_pain_classes > 0:
+            self.test_pain_cm = ConfusionMatrix(task="multiclass", num_classes=self.hparams.num_pain_classes, **metric_args_cm)
+        if self.hparams.num_stimulus_classes > 0:
+            self.test_stim_cm = ConfusionMatrix(task="multiclass", num_classes=self.hparams.num_stimulus_classes, **metric_args_cm)
 
     @staticmethod
     def coral_loss(logits, levels, importance_weights=None, reduction='mean', label_smoothing=0.0, distance_penalty=False, focal_gamma=None):
@@ -242,9 +252,18 @@ class MultiTaskCoralClassifier(pl.LightningModule):
             if len(valid_pain_labels.unique()) > 1:
                 qwk_metric.update(pain_preds, valid_pain_labels)
             
+            # Update Accuracy for Pain
+            acc_metric_pain = getattr(self, f"{stage}_pain_acc")
+            acc_metric_pain.update(pain_preds, valid_pain_labels)
+            
+            # Update Test Confusion Matrix for Pain if stage is 'test'
+            if stage == 'test' and hasattr(self, 'test_pain_cm'):
+                self.test_pain_cm.update(pain_preds, valid_pain_labels)
+
             self.log(f"{stage}_pain_loss", pain_loss, on_step=(stage=='train'), on_epoch=True, prog_bar=False, logger=True, sync_dist=True)
             self.log(f"{stage}_pain_MAE", mae_metric, on_step=False, on_epoch=True, prog_bar=True, logger=True, sync_dist=True)
             self.log(f"{stage}_pain_QWK", qwk_metric, on_step=False, on_epoch=True, prog_bar=True, logger=True, sync_dist=True)
+            self.log(f"{stage}_pain_Accuracy", acc_metric_pain, on_step=False, on_epoch=True, prog_bar=True, logger=True, sync_dist=True)
 
         # --- Stimulus Task ---
         valid_stim_mask = stimulus_labels != -1
@@ -270,9 +289,18 @@ class MultiTaskCoralClassifier(pl.LightningModule):
             if len(valid_stim_labels.unique()) > 1:
                 qwk_metric.update(stim_preds, valid_stim_labels)
             
+            # Update Accuracy for Stimulus
+            acc_metric_stim = getattr(self, f"{stage}_stim_acc")
+            acc_metric_stim.update(stim_preds, valid_stim_labels)
+
+            # Update Test Confusion Matrix for Stimulus if stage is 'test'
+            if stage == 'test' and hasattr(self, 'test_stim_cm'):
+                self.test_stim_cm.update(stim_preds, valid_stim_labels)
+
             self.log(f"{stage}_stim_loss", stim_loss, on_step=(stage=='train'), on_epoch=True, prog_bar=False, logger=True, sync_dist=True)
             self.log(f"{stage}_stim_MAE", mae_metric, on_step=False, on_epoch=True, prog_bar=True, logger=True, sync_dist=True)
             self.log(f"{stage}_stim_QWK", qwk_metric, on_step=False, on_epoch=True, prog_bar=True, logger=True, sync_dist=True)
+            self.log(f"{stage}_stim_Accuracy", acc_metric_stim, on_step=False, on_epoch=True, prog_bar=True, logger=True, sync_dist=True)
 
         # --- Combine Losses ---
         # Only add stim_loss if there are valid stim labels
@@ -371,8 +399,7 @@ class MultiTaskCoralClassifier(pl.LightningModule):
                 mode='max' if hasattr(self, 'monitor_metric') and 'QWK' in self.monitor_metric else 'min',
                 factor=getattr(self.hparams, 'lr_factor', 0.5),
                 patience=getattr(self.hparams, 'lr_patience', 5),
-                min_lr=getattr(self.hparams, 'min_lr', 1e-6),
-                verbose=True
+                min_lr=getattr(self.hparams, 'min_lr', 1e-6)
             )
             
             # PyTorch Lightning expects this format for ReduceLROnPlateau

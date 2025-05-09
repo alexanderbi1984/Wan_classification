@@ -1,6 +1,7 @@
-# Data Modules: BioVid & Syracuse
+# Data Modules: BioVid, Syracuse, and Multi-Task Wrapper
 
-This README describes the BioVid and Syracuse PyTorch Lightning DataModules in this project.
+This README describes the BioVid and Syracuse PyTorch Lightning DataModules,
+and the `CombinedTaskDatasetWrapper` used to prepare their outputs for multi-task learning.
 
 ## 1. BioVidDataModule (`biovid.py`)
 
@@ -70,7 +71,43 @@ This README describes the BioVid and Syracuse PyTorch Lightning DataModules in t
 
 ---
 
-## 3. Comparison Table
+## 3. CombinedTaskDatasetWrapper (`combined_task_wrapper.py`)
+
+### Purpose
+- Standardizes the output of individual datasets (`SyracuseDataset` or `BioVidDataset`) for use with a multi-task learning model.
+- Ensures that each item fetched from the dataset conforms to a consistent structure expected by the multi-task model.
+
+### Key Features
+- **Input:**
+  - `original_dataset`: An instance of `SyracuseDataset` or `BioVidDataset`.
+  - `task_name`: A string specifying the primary task of the `original_dataset`.
+    - `'pain_level'`: For Syracuse datasets, focusing on pain classification/regression.
+    - `'stimulus'`: For BioVid datasets, focusing on stimulus type classification.
+- **Output Structure:**
+  - Each call to `__getitem__` returns a 3-tuple: `(features, pain_label, stimulus_label)`.
+  - `features`: The feature tensor from the `original_dataset`.
+  - `pain_label`: The pain label (e.g., integer class index from Syracuse). If the wrapper's `task_name` is `'stimulus'`, this is set to `-1`.
+  - `stimulus_label`: The stimulus label (e.g., integer class index from BioVid). If the wrapper's `task_name` is `'pain_level'`, this is set to `-1`.
+- **Integration:**
+  - In `train_multitask.py`, instances of `SyracuseDataset` and `BioVidDataset` (obtained from their respective DataModules) are wrapped with `CombinedTaskDatasetWrapper` before being combined using `torch.utils.data.ConcatDataset`. This creates a single training dataset that yields samples suitable for the multi-task model.
+- **Warnings:**
+  - Issues warnings if a `SyracuseDataset` (task_name='pain_level') is not in 'classification' mode or appears to be missing classification thresholds, as the multi-task model typically expects integer class labels for pain.
+
+### Usage Example (Conceptual, as used in `train_multitask.py`):
+```python
+from data.combined_task_wrapper import CombinedTaskDatasetWrapper
+# Assume syracuse_train_dataset and biovid_train_dataset are available
+
+wrapped_syracuse = CombinedTaskDatasetWrapper(syracuse_train_dataset, task_name='pain_level')
+wrapped_biovid = CombinedTaskDatasetWrapper(biovid_train_dataset, task_name='stimulus')
+
+# combined_train_dataset = ConcatDataset([wrapped_syracuse, wrapped_biovid])
+# Now, items from combined_train_dataset will be (features, pain_label, stimulus_label)
+```
+
+---
+
+## 4. Comparison Table
 
 | Feature         | BioVidDataModule            | SyracuseDataModule                   |
 |----------------|----------------------------|--------------------------------------|

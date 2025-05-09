@@ -120,6 +120,7 @@ class BioVidDataset(Dataset):
         if self.transform:
             arr = self.transform(arr)
         label = torch.tensor(sample['label'], dtype=torch.long)
+        # print(f"sample: {sample['fname']}, arr shape: {arr.shape}, label: {label}")
         return arr, sample['subject_id'], label
 
     def label_distribution(self):
