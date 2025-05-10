@@ -41,6 +41,71 @@ def save_hparams_to_dir(hparams, out_dir, timestamp):
     with open(os.path.join(out_dir, f"hparams_{timestamp}.json"), "w") as f:
         json.dump(hparams, f, indent=4)
 
+def detect_input_shape(primary_dm, fallback_dm=None, flatten=True, temporal_pooling='mean'):
+    """
+    Robustly detect input shape from data modules with clear error messages.
+    
+    Args:
+        primary_dm: Primary data module to check first (e.g., syracuse_dm)
+        fallback_dm: Secondary data module to check as fallback (e.g., biovid_dm)
+        flatten: Whether datasets are expected to produce flattened outputs
+        temporal_pooling: The temporal pooling strategy being used
+        
+    Returns:
+        Tuple: (input_shape, input_dim) - both the raw shape and calculated dimension
+        
+    Raises:
+        ValueError: If input shape cannot be determined or validation fails
+    """
+    input_shape = None
+    
+    # Try to get shape from primary or fallback data modules
+    for dm in [primary_dm, fallback_dm]:
+        if dm is None:
+            continue
+            
+        # Try direct example_shape first
+        if hasattr(dm, 'example_shape') and dm.example_shape is not None:
+            input_shape = dm.example_shape
+            print(f"[INFO] Found example_shape from {dm.__class__.__name__}: {input_shape}")
+            break
+            
+        # Fall back to dataset example shape
+        if hasattr(dm, 'train_dataset') and dm.train_dataset and len(dm.train_dataset) > 0:
+            if hasattr(dm.train_dataset, 'example_shape') and dm.train_dataset.example_shape is not None:
+                input_shape = dm.train_dataset.example_shape
+                print(f"[INFO] Found example_shape from {dm.__class__.__name__}.train_dataset: {input_shape}")
+                break
+    
+    # If we still don't have a shape, raise an error
+    if input_shape is None:
+        modules_str = f"{primary_dm.__class__.__name__}, {fallback_dm.__class__.__name__ if fallback_dm else 'None'}"
+        raise ValueError(f"Could not detect input_shape from data modules: {modules_str}")
+    
+    # Validate shape based on flattening expectations
+    if flatten and temporal_pooling != 'none':
+        # For flattened data with pooling, we expect a 1D shape
+        if isinstance(input_shape, tuple) and len(input_shape) > 1:
+            print(f"[WARNING] Expected 1D shape with flatten={flatten} and temporal_pooling='{temporal_pooling}', "
+                  f"but got {input_shape}. Will flatten automatically.")
+    
+    # Calculate input dimension
+    if isinstance(input_shape, tuple):
+        input_dim = 1
+        for x in input_shape:
+            input_dim *= x
+    else:
+        # Should be int if already flattened to a single dim
+        input_dim = int(input_shape)
+    
+    print(f"[INFO] Determined input_dim for model: {input_dim} (from shape: {input_shape})")
+    
+    # Basic sanity check
+    if input_dim <= 0:
+        raise ValueError(f"Calculated input_dim is {input_dim}, which is invalid. Check dataset implementation.")
+        
+    return input_shape, input_dim
+
 def setup_model_and_trainer(config, args, logs_dir, ckpt_dir, run_name, timestamp, input_dim):
     # --- Model Setup ---
     model_cfg = config.get("model_params", {})
@@ -218,47 +283,12 @@ def main():
             
             # --- Get input_dim from the original Syracuse dataset before wrapping ---
             # This ensures input_dim is based on the raw feature shape.
-            input_shape = syracuse_dm.example_shape 
-            if input_shape is None and syracuse_dm.train_dataset and len(syracuse_dm.train_dataset) > 0:
-                # Fallback if syracuse_dm.example_shape is None but train_dataset exists
-                print("[WARN] syracuse_dm.example_shape was None, attempting to get shape from first train sample.")
-                input_shape = syracuse_dm.train_dataset.example_shape
-            
-            if input_shape is None:
-                 # If still None, try BioVid as a last resort, or raise error if both are empty/None
-                if biovid_dm.example_shape is not None:
-                    input_shape = biovid_dm.example_shape
-                    print("[WARN] Syracuse example_shape was None, using BioVid example_shape for input_dim.")
-                elif biovid_dm.train_dataset and len(biovid_dm.train_dataset) > 0:
-                    input_shape = biovid_dm.train_dataset.example_shape
-                    print("[WARN] Syracuse example_shape was None, using BioVid train_dataset.example_shape for input_dim.")
-                else:
-                    raise ValueError("Cannot determine input_shape from either Syracuse or BioVid datasets. Both seem empty or lack example_shape.")
-
-            # Use flatten and temporal_pooling settings from specific dataset configs for the check
-            # This part of logic might need refinement based on how example_shape is determined post-pooling/flattening
-            syracuse_flatten_cfg = syracuse_cfg.get("flatten", True)
-            syracuse_temporal_pooling_cfg = syracuse_cfg.get("temporal_pooling", "mean")
-            
-            if syracuse_flatten_cfg and syracuse_temporal_pooling_cfg != 'none': 
-                if not (isinstance(input_shape, tuple) and len(input_shape) == 1):
-                    # This check might be too strict if 'none' pooling + flatten=True is valid for some raw 2D/3D features
-                    # that are intended to be flattened without prior pooling.
-                    # For now, keeping it as it implies an expectation of 1D after pooling if flatten is true.
-                    print(f"[INFO] Input shape before flatten (from data module): {input_shape}")
-                    # We expect input_shape from dataset.example_shape to be the shape *after* pooling and flattening.
-                    # The original check was: if not (isinstance(input_shape, tuple) and len(input_shape) == 1):
-                    # This should ideally be checked on the *final* shape if flatten=True is the last step.
-                    # The `example_shape` from dataset classes should ALREADY reflect flattening if it was True.
-                    pass # Assuming dataset's example_shape already reflects flattening.
-
-            if isinstance(input_shape, tuple):
-                input_dim = 1
-                for x in input_shape:
-                    input_dim *= x
-            else: # Should be int if already flattened to a single dim size
-                input_dim = int(input_shape)
-            print(f"[INFO] Determined input_dim for model: {input_dim} (from shape: {input_shape})")
+            input_shape, input_dim = detect_input_shape(
+                primary_dm=syracuse_dm, 
+                fallback_dm=biovid_dm,
+                flatten=syracuse_cfg.get("flatten", True),
+                temporal_pooling=syracuse_cfg.get("temporal_pooling", "mean")
+            )
 
             # --- Wrap datasets for multi-task learning ---
             wrapped_syracuse_train = CombinedTaskDatasetWrapper(syracuse_dm.train_dataset, task_name='pain_level')
@@ -475,34 +505,12 @@ def main():
         syracuse_dm.setup(); biovid_dm.setup()
 
         # --- Get input_dim from the original Syracuse dataset before wrapping ---
-        input_shape = syracuse_dm.example_shape
-        if input_shape is None and syracuse_dm.train_dataset and len(syracuse_dm.train_dataset) > 0:
-            input_shape = syracuse_dm.train_dataset.example_shape
-        
-        if input_shape is None:
-            if biovid_dm.example_shape is not None:
-                input_shape = biovid_dm.example_shape
-                print("[WARN] Syracuse example_shape was None, using BioVid example_shape for input_dim.")
-            elif biovid_dm.train_dataset and len(biovid_dm.train_dataset) > 0:
-                input_shape = biovid_dm.train_dataset.example_shape
-                print("[WARN] Syracuse example_shape was None, using BioVid train_dataset.example_shape for input_dim.")
-            else:
-                raise ValueError("Cannot determine input_shape from either Syracuse or BioVid datasets in train/test mode.")
-
-        # Use flatten and temporal_pooling settings from specific dataset configs for the check
-        syracuse_flatten_cfg = syracuse_cfg.get("flatten", True)
-        syracuse_temporal_pooling_cfg = syracuse_cfg.get("temporal_pooling", "mean")
-
-        if syracuse_flatten_cfg and syracuse_temporal_pooling_cfg != 'none':
-            pass # Assuming dataset's example_shape already reflects flattening.
-
-        if isinstance(input_shape, tuple):
-            input_dim = 1
-            for x in input_shape:
-                input_dim *= x
-        else:
-            input_dim = int(input_shape)
-        print(f"[INFO] Determined input_dim for model: {input_dim} (from shape: {input_shape})")
+        input_shape, input_dim = detect_input_shape(
+            primary_dm=syracuse_dm, 
+            fallback_dm=biovid_dm,
+            flatten=syracuse_cfg.get("flatten", True),
+            temporal_pooling=syracuse_cfg.get("temporal_pooling", "mean")
+        )
 
         # --- Wrap datasets ---
         wrapped_syracuse_train = CombinedTaskDatasetWrapper(syracuse_dm.train_dataset, task_name='pain_level')
