@@ -2,16 +2,18 @@ run_name: "biovid_coral_baseline"
 
 # BioVid Dataset Settings
 biovid_settings:
-  features_path: "/home/nbi/marlin/wan_features/"  # Update this path
+  # features_path: "/home/nbi/marlin/biovid_multimodal_marlin_features/multimodal_marlin_base/"  # multimodal marlin features
+  features_path: "/home/nbi/marlin/wan_features/"  # "/home/nbi/marlin/wan_features/" for single modality marlin features
   meta_path: "/home/nbi/marlin/wan_features/meta.json"  # Update this path
   split_ratio: 0.8
   temporal_pooling: "mean"  # Options: mean, max, sample
   flatten: true
+  input_format: "CTHW"  # Options: CTHW ([C,T,H,W]) or TCHW ([T,C*H*W])(for multimodal marlin features)
   num_classes_stimulus: 5  # BioVid has 5 pain intensity levels
 
 # Model Architecture Parameters
 model_params:
-  encoder_hidden_dims: [512, 256,128]  # MLP layers after feature extraction
+  encoder_hidden_dims: [512, 256]  # MLP layers after feature extraction
   encoder_dropout: 0.5
   use_distance_penalty: true
   focal_gamma: 2.0

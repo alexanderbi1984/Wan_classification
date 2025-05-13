@@ -186,7 +186,8 @@ def main():
         split_ratio=biovid_cfg.get("split_ratio", 0.8),
         seed=seed,
         temporal_pooling=biovid_cfg.get("temporal_pooling", "mean"),
-        flatten=biovid_cfg.get("flatten", True)
+        flatten=biovid_cfg.get("flatten", True),
+        input_format=biovid_cfg.get("input_format", "CTHW")
     )
     biovid_dm.setup()
 

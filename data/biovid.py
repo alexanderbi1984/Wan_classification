@@ -9,7 +9,7 @@ import random
 from collections import Counter
 
 class BioVidDataset(Dataset):
-    def __init__(self, features_path, meta_path, subject_ids=None, transform=None, use_video_fallback=False, temporal_pooling='mean', flatten=True):
+    def __init__(self, features_path, meta_path, subject_ids=None, transform=None, use_video_fallback=False, temporal_pooling='mean', flatten=True, input_format='CTHW'):
         """
         Args:
             features_path: Path to npy feature folder
@@ -20,12 +20,15 @@ class BioVidDataset(Dataset):
             temporal_pooling: 'mean', 'max', or 'sample'
                 'sample' will randomly select 5 frames (pad with zeros if not enough)
             flatten: If True, return features as 1D. If False, return spatial/temporal shape as processed.
+            input_format: Format of input features, either 'CTHW' for [C,T,H,W] or 'TCHW' for [T,C*H*W]
         """
+        assert input_format in ['CTHW', 'TCHW'], f"input_format must be 'CTHW' or 'TCHW', got {input_format}"
         self.features_path = features_path
         self.transform = transform
         self.use_video_fallback = use_video_fallback
         self.temporal_pooling = temporal_pooling
         self.flatten = flatten
+        self.input_format = input_format
         self.samples = []
         # Read meta.json and filter by biovid + subject_ids
         with open(meta_path, 'r') as f:
@@ -45,6 +48,24 @@ class BioVidDataset(Dataset):
         if self.samples:
             arr = np.load(os.path.join(self.features_path, self.samples[0]['fname']))
             arr = torch.from_numpy(arr).float()
+            
+            # Handle different input formats
+            if self.input_format == 'TCHW':
+                if arr.ndim != 2:
+                    raise ValueError(f"TCHW format expects 2D tensor [T,D], got shape {arr.shape}")
+                T, D = arr.shape
+                # Fixed C=3, calculate H=W
+                C = 3
+                remaining = D // C
+                H = int(np.sqrt(remaining))
+                if H * H != remaining:
+                    raise ValueError(f"Cannot reshape tensor with D={D} into square spatial dimensions with C={C}")
+                arr = arr.view(T, C, H, H)
+                arr = arr.permute(1, 0, 2, 3)  # [C,T,H,W]
+            elif self.input_format == 'CTHW':
+                if arr.ndim != 4:
+                    raise ValueError(f"CTHW format expects 4D tensor [C,T,H,W], got shape {arr.shape}")
+            
             # Apply pooling logic for true shape after processing
             if self.temporal_pooling == 'mean':
                 arr = arr.mean(dim=1)
@@ -82,8 +103,25 @@ class BioVidDataset(Dataset):
         npy_path = os.path.join(self.features_path, sample['fname'])
         if os.path.exists(npy_path):
             arr = np.load(npy_path)
-            assert arr.ndim == 4, f"Expected 4D tensor [C,T,H,W], got {arr.shape} for {sample['fname']}"
             arr = torch.from_numpy(arr).float()
+            
+            # Handle different input formats
+            if self.input_format == 'TCHW':
+                if arr.ndim != 2:
+                    raise ValueError(f"TCHW format expects 2D tensor [T,D], got shape {arr.shape}")
+                T, D = arr.shape
+                # Fixed C=3, calculate H=W
+                C = 3
+                remaining = D // C
+                H = int(np.sqrt(remaining))
+                if H * H != remaining:
+                    raise ValueError(f"Cannot reshape tensor with D={D} into square spatial dimensions with C={C}")
+                arr = arr.view(T, C, H, H)
+                arr = arr.permute(1, 0, 2, 3)  # [C,T,H,W]
+            elif self.input_format == 'CTHW':
+                if arr.ndim != 4:
+                    raise ValueError(f"CTHW format expects 4D tensor [C,T,H,W], got shape {arr.shape}")
+            
             # --- Temporal Pooling ---
             if self.temporal_pooling == 'mean':
                 arr = arr.mean(dim=1)  # [C,H,W]
@@ -120,7 +158,6 @@ class BioVidDataset(Dataset):
         if self.transform:
             arr = self.transform(arr)
         label = torch.tensor(sample['label'], dtype=torch.long)
-        # print(f"sample: {sample['fname']}, arr shape: {arr.shape}, label: {label}")
         return arr, sample['subject_id'], label
 
     def label_distribution(self):
@@ -134,7 +171,7 @@ class BioVidDataset(Dataset):
         return s
 
 class BioVidDataModule(pl.LightningDataModule):
-    def __init__(self, features_path, meta_path, batch_size=32, num_workers=4, split_ratio=0.8, seed=42, use_video_fallback=False, temporal_pooling='mean', flatten=True):
+    def __init__(self, features_path, meta_path, batch_size=32, num_workers=4, split_ratio=0.8, seed=42, use_video_fallback=False, temporal_pooling='mean', flatten=True, input_format='CTHW'):
         super().__init__()
         self.features_path = features_path
         self.meta_path = meta_path
@@ -145,6 +182,7 @@ class BioVidDataModule(pl.LightningDataModule):
         self.use_video_fallback = use_video_fallback
         self.temporal_pooling = temporal_pooling
         self.flatten = flatten
+        self.input_format = input_format
 
     def setup(self, stage: Optional[str] = None):
         # Gather all biovid subject_ids
@@ -162,11 +200,11 @@ class BioVidDataModule(pl.LightningDataModule):
         self.train_dataset = BioVidDataset(
             self.features_path, self.meta_path, subject_ids=train_subjects,
             use_video_fallback=self.use_video_fallback, temporal_pooling=self.temporal_pooling,
-            flatten=self.flatten)
+            flatten=self.flatten, input_format=self.input_format)
         self.val_dataset = BioVidDataset(
             self.features_path, self.meta_path, subject_ids=val_subjects,
             use_video_fallback=self.use_video_fallback, temporal_pooling=self.temporal_pooling,
-            flatten=self.flatten)
+            flatten=self.flatten, input_format=self.input_format)
 
     def train_dataloader(self):
         return DataLoader(self.train_dataset, batch_size=self.batch_size, num_workers=self.num_workers, shuffle=True)
