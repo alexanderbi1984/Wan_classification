@@ -54,14 +54,51 @@ This document summarizes how the VAE and xDiT (transformer) models are instantia
   ```
 - **Feature Extraction:**
   - The model processes VAE latents and outputs denoised latents during the diffusion process.
-  - To extract intermediate features (e.g., patch embeddings, block outputs, or final transformer output), you need to:
-    - Modify the `WanModel` class to return or expose the desired internal representations.
-    - This may involve editing the `forward` method to return features from specific layers or blocks.
-  - Example (conceptual):
-    ```python
-    # After modification
-    features, output = self.model(..., return_features=True)
+  - You can extract two types of features:
+    - **Patchified transformer features** (sequence of patch tokens, shape `[seq_len, hidden_dim]`)
+    - **Unpatchified denoised latents** (final output, shape `[C, F, H, W]`)
+  - A ready-to-use script is provided at `feature_extraction/extract_xdit_features.py` to extract xDiT features from a single video file or from all videos in a folder.
+
+  - **Single video usage (patchified features):**
+    ```sh
+    python feature_extraction/extract_xdit_features.py \
+        --video path/to/input_video.mp4 \
+        --checkpoint_dir path/to/model_checkpoint_directory \
+        --output output_xdit_features.npy \
+        --device cuda
     ```
+    - Output: Patchified transformer features, shape `[seq_len, hidden_dim]` (e.g., `[320, 1536]`).
+
+  - **Single video usage (unpatchified/denoised latents):**
+    ```sh
+    python feature_extraction/extract_xdit_features.py \
+        --video path/to/input_video.mp4 \
+        --checkpoint_dir path/to/model_checkpoint_directory \
+        --output output_xdit_latents.npy \
+        --device cuda \
+        --unpatchify_output
+    ```
+    - Output: Denoised latent, shape `[C, F, H, W]` (e.g., `[16, 5, 16, 16]`), directly comparable to VAE latents.
+
+  - **Batch processing all videos in a folder:**
+    ```sh
+    python feature_extraction/extract_xdit_features.py \
+        --video path/to/input_folder \
+        --checkpoint_dir path/to/model_checkpoint_directory \
+        --output path/to/output_folder \
+        --device cuda [--unpatchify_output]
+    ```
+    - Output files will use the same base name as the input video but with a `.npy` extension.
+
+  - **Options:**
+    - `--unpatchify_output`: If set, saves the final denoised latent `[C, F, H, W]` (recommended for downstream tasks that expect VAE-like features).
+    - If not set, saves the patchified transformer features `[seq_len, hidden_dim]`.
+    - `--feature_layer`: You can specify which transformer block's output to extract (default: final block).
+    - `--use_text_context`: Use actual T5 encoder for context (default: dummy context for efficiency).
+
+  - **Output shapes:**
+    - Patchified: `[seq_len, hidden_dim]` (e.g., `[320, 1536]`)
+    - Unpatchified: `[C, F, H, W]` (e.g., `[16, 5, 16, 16]`)
 
 ---
 
@@ -73,15 +110,15 @@ This document summarizes how the VAE and xDiT (transformer) models are instantia
 
 - **Current Feature Access:**
   - VAE latents can be accessed directly via the `encode` method or via the provided batch script.
-  - xDiT features require code modification to expose intermediate outputs.
+  - xDiT features can be accessed via the provided script, with options for patchified or unpatchified output.
 
 ---
 
 ## 4. Next Steps
 
 - For VAE latents: Use the existing `encode` method or batch script.
-- For xDiT features: Modify `WanModel` to return the desired features.
+- For xDiT features: Use the provided script with the desired output option (`--unpatchify_output` for denoised latents).
 
 ---
 
-*This document serves as a reference for implementing and reviewing feature extraction from the Wan VAE and xDiT models.* 
+*This document serves as a reference for implementing and reviewing feature extraction from the Wan VAE and xDiT models, including both patchified transformer features and denoised latent outputs suitable for downstream tasks.* 

@@ -12,6 +12,7 @@
 *.zip
 *.pt
 *.pth
+*.npy
 *.ckpt
 *.safetensors
 *.json

@@ -3,7 +3,8 @@ run_name: "biovid_coral_baseline"
 # BioVid Dataset Settings
 biovid_settings:
   # features_path: "/home/nbi/marlin/biovid_multimodal_marlin_features/multimodal_marlin_base/"  # multimodal marlin features
-  features_path: "/home/nbi/marlin/wan_features/"  # "/home/nbi/marlin/wan_features/" for single modality marlin features
+  features_path: "/home/nbi/marlin/wan_features/"  # "/home/nbi/marlin/wan_features/" for single modality wan features
+  # features_path: "/home/nbi/marlin/wan_xDiT_features/"  # wan xDiT features
   meta_path: "/home/nbi/marlin/wan_features/meta.json"  # Update this path
   split_ratio: 0.8
   temporal_pooling: "mean"  # Options: mean, max, sample
@@ -35,7 +36,7 @@ lr_scheduler_params:
 # Training Parameters
 trainer_params:
   batch_size: 32
-  max_epochs: 500
+  max_epochs: 1000
   early_stop_patience: 150
   model_summary_depth: 2
   monitor_metric: "val_stim_QWK"  # Using stimulus metrics since we're training on BioVid only
