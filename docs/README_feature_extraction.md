@@ -1,6 +1,17 @@
 # Feature Extraction in Wan: VAE and xDiT
 
-This document summarizes how the VAE and xDiT (transformer) models are instantiated and used in the Wan codebase, and how to extract their features for downstream tasks.
+---
+
+## Multimodal Pipeline Usage (NEW)
+
+With the introduction of the multimodal pipeline (see `README_multimodal_pipeline.md`), VAE and xDiT features are now used together for downstream multi-task learning. The recommended practice is to extract both VAE and xDiT features for each sample, ensuring that their temporal (T), height (H), and width (W) dimensions match for effective fusion.
+
+- **Recommended output shape for both VAE and xDiT:** `[C, T, H, W]` (e.g., `[16, 5, 16, 16]` for VAE, `[1536, 5, 8, 8]` for xDiT)
+- **Best practices:**
+  - Use the same temporal length (T), height (H), and width (W) for both modalities.
+  - Set `temporal_pooling='none'` and `flatten=False` in your data module config to preserve the full sequence for the multimodal model.
+  - Ensure that extracted features are saved in a format compatible with the multimodal pipeline (see example scripts below).
+  - For end-to-end usage and integration, see `README_multimodal_pipeline.md`.
 
 ---
 
@@ -89,7 +100,7 @@ This document summarizes how the VAE and xDiT (transformer) models are instantia
         --device cuda \
         --return_temporal_features
     ```
-    - Output: Temporal features, shape `[C, T, H, W]` (e.g., `[1536, 5, 16, 16]`).
+    - Output: Temporal features, shape `[C, T, H, W]` (e.g., `[1536, 5, 8, 8]`).
     - Note: The output is permuted from the model's native `[T, H, W, C]` to `[C, T, H, W]` for PyTorch compatibility.
 
   - **Batch processing all videos in a folder:**
@@ -110,7 +121,7 @@ This document summarizes how the VAE and xDiT (transformer) models are instantia
 
   - **Output shapes:**
     - Patchified: `[seq_len, hidden_dim]` (e.g., `[320, 1536]`)
-    - Unpatchified: `[C, F, H, W]` (e.g., `[16, 5, 16, 16]`)
+    - Unpatchified: `[C, F, H, W]` (e.g., `[1536, 5, 8, 8]`)
 
 ---
 
@@ -130,7 +141,9 @@ This document summarizes how the VAE and xDiT (transformer) models are instantia
 
 - For VAE latents: Use the existing `encode` method or batch script.
 - For xDiT features: Use the provided script with the desired output option (`--unpatchify_output` for denoised latents).
+- For multimodal downstream tasks, ensure both VAE and xDiT features are extracted and saved with matching shapes and temporal alignment.
+- See `README_multimodal_pipeline.md` for end-to-end multimodal usage and integration.
 
 ---
 
-*This document serves as a reference for implementing and reviewing feature extraction from the Wan VAE and xDiT models, including both patchified transformer features and denoised latent outputs suitable for downstream tasks.* 
+*This document serves as a reference for implementing and reviewing feature extraction from the Wan VAE and xDiT models, including both patchified transformer features and denoised latent outputs suitable for downstream tasks and multimodal fusion.* 

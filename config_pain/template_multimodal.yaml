@@ -1,0 +1,77 @@
+# Template config for Multimodal Multi-Task Ordinal Classification (Pain/Stimulus)
+# Place this in Wan_classification/config_pain/
+
+run_name: multimodal_example_run
+
+# Model parameters
+model_params:
+  vae_in_channels: 16   # REQUIRED: Number of channels for VAE features
+  xdit_in_channels: 8   # REQUIRED: Number of channels for xDiT features
+  vae_processor: resnet3d
+  xdit_processor: linear_bn
+  fusion_type: cat_proj_bn_relu
+  fusion_dim: 128
+  temporal_encoder: gru
+  temporal_dim: 128
+  pooling: mean
+  shared_mlp_dim: 64
+  dropout: 0.2
+  num_heads: 2
+  # Add any other model-specific params here
+
+# Syracuse dataset settings
+syracuse_settings:
+  meta_path: /path/to/syracuse/meta.csv
+  task: classification
+  thresholds: null
+  num_classes_pain: 5
+  cv_fold: 0
+  balanced_sampling: false
+  temporal_pooling: none
+  flatten: false
+
+# BioVid dataset settings
+biovid_settings:
+  features_path: /path/to/biovid/features.npy
+  meta_path: /path/to/biovid/meta.csv
+  num_classes_stimulus: 4
+  split_ratio: 0.8
+  temporal_pooling: none
+  flatten: false
+
+# Trainer and experiment settings
+trainer_params:
+  batch_size: 32
+  num_workers: 4
+  precision: 32
+  max_epochs: 75
+  early_stop_patience: 20
+  model_summary_depth: 2
+  monitor_metric: val_pain_QWK  # or val_pain_MAE
+  seed: 42
+  profiler: null  # 'simple', 'advanced', or null
+  # Advanced callbacks/logging
+  use_rich_progress_bar: true
+  use_swa: false
+  swa_epoch_start: 0.8
+  use_gradient_accum: false
+  grad_accum_schedule: {0: 1}
+  use_wandb: false
+  wandb_project: multimodal_pain
+  use_comet: false
+  comet_project: multimodal_pain
+
+# Optimizer settings
+optimizer_params:
+  optimizer: adam
+  lr: 0.001
+  weight_decay: 0.0
+
+# LR scheduler settings
+lr_scheduler_params:
+  use_scheduler: true
+  factor: 0.1
+  patience: 10
+  min_lr: 1e-6
+
+# Add any other custom sections as needed 
