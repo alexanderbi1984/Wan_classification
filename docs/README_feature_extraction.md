@@ -80,6 +80,18 @@ This document summarizes how the VAE and xDiT (transformer) models are instantia
     ```
     - Output: Denoised latent, shape `[C, F, H, W]` (e.g., `[16, 5, 16, 16]`), directly comparable to VAE latents.
 
+  - **Single video usage (temporal features, CTHW):**
+    ```sh
+    python feature_extraction/extract_xdit_features.py \
+        --video path/to/input_video.mp4 \
+        --checkpoint_dir path/to/model_checkpoint_directory \
+        --output output_temporal_features.npy \
+        --device cuda \
+        --return_temporal_features
+    ```
+    - Output: Temporal features, shape `[C, T, H, W]` (e.g., `[1536, 5, 16, 16]`).
+    - Note: The output is permuted from the model's native `[T, H, W, C]` to `[C, T, H, W]` for PyTorch compatibility.
+
   - **Batch processing all videos in a folder:**
     ```sh
     python feature_extraction/extract_xdit_features.py \

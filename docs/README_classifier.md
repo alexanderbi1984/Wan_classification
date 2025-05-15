@@ -13,6 +13,7 @@ The `MultiTaskCoralClassifier` implements a multi-task learning approach for ord
 
 1. **Shared Encoder**: A configurable MLP network that processes the input features
    - Supports variable hidden dimensions via `encoder_hidden_dims`
+   - **Now includes BatchNorm1d before each ReLU activation** (for both single-layer and multi-layer encoders) to improve training stability and normalization
    - Configurable dropout rate via `encoder_dropout`
 
 2. **Dual Task-Specific Heads**: Two separate CORAL (Consistent Rank Logits) heads

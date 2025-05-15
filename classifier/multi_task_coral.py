@@ -83,6 +83,7 @@ class MultiTaskCoralClassifier(pl.LightningModule):
         if encoder_hidden_dims is None or len(encoder_hidden_dims) == 0:
             self.shared_encoder = nn.Sequential(
                 nn.Linear(input_dim, input_dim),
+                nn.BatchNorm1d(input_dim),
                 nn.ReLU(),
                 nn.Dropout(encoder_dropout)
             )
@@ -92,6 +93,7 @@ class MultiTaskCoralClassifier(pl.LightningModule):
             current_dim = input_dim
             for h_dim in encoder_hidden_dims:
                 layers.append(nn.Linear(current_dim, h_dim))
+                layers.append(nn.BatchNorm1d(h_dim))
                 layers.append(nn.ReLU())
                 layers.append(nn.Dropout(encoder_dropout))
                 current_dim = h_dim

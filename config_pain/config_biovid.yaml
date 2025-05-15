@@ -14,8 +14,8 @@ biovid_settings:
 
 # Model Architecture Parameters
 model_params:
-  encoder_hidden_dims: [512, 256]  # MLP layers after feature extraction
-  encoder_dropout: 0.5
+  encoder_hidden_dims: [512, 256,128]  # MLP layers after feature extraction
+  encoder_dropout: 0.7
   use_distance_penalty: true
   focal_gamma: 2.0
   label_smoothing: 0.1

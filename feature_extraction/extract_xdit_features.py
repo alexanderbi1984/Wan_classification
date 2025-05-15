@@ -30,6 +30,7 @@ class FeatureExtractorWanModel(torch.nn.Module):
         clip_fea=None,
         y=None,
         return_features=False,
+        return_temporal_features=False,
         feature_layer=-1,  # -1 means final output, otherwise specific block index
     ):
         """Modified forward method to return intermediate features.
@@ -59,7 +60,7 @@ class FeatureExtractorWanModel(torch.nn.Module):
         try:
             b, c, f, h, w = x[0].shape
         except ValueError as e:
-            print(f"Error unpacking dimensions: {e}")
+            print(f"NO BATCH DIMENSION: {e}")
             print(f"x[0] shape: {x[0].shape}")
             # Try to adapt to different input shapes
             if len(x[0].shape) == 4:  # Handle case where batch dimension is missing
@@ -102,6 +103,13 @@ class FeatureExtractorWanModel(torch.nn.Module):
             if return_features and (feature_layer == i or feature_layer == -1 and i == len(model.blocks) - 1):
                 block_features.append(x.clone())
         
+        # Extract temporal features
+        temporal_features = self.extract_temporal_features(x, grid_sizes)
+        # add sanity check
+        assert temporal_features.shape[0] == 1, "Expected temporal features to be [B, T, H, W, dim]"
+        temporal_features = temporal_features[0]
+
+        
         # head
         x = model.head(x, e)
         
@@ -109,12 +117,42 @@ class FeatureExtractorWanModel(torch.nn.Module):
         x = model.unpatchify(x, grid_sizes)
         
         if return_features:
+            print(f"RETURNING FEATURES: {x.shape}, {block_features[0].shape}, {grid_sizes.shape}")
             return x, block_features, grid_sizes
-        return x
+        elif return_temporal_features:
+            print(f"RETURNING TEMPORAL FEATURES: {temporal_features.shape}")
+            return x, block_features, grid_sizes, temporal_features
+        else:
+            return x
 
     def to(self, *args, **kwargs):
         self.model.to(*args, **kwargs)
         return super().to(*args, **kwargs)
+    
+    def extract_temporal_features(self, features, grid_sizes):
+        """
+        Reshape [B, L, dim] token features to [B, T, H, W, dim] based on grid size.
+        
+        Args:
+            features (Tensor): Transformer output of shape [B, L, dim]
+            grid_sizes (Tensor): Grid sizes used for patch embedding, shape [B, 3] with (T', H', W')
+        
+        Returns:
+            Tensor: Reshaped features with temporal dimension [B, T, H, W, dim]
+        """
+        B, L, D = features.shape
+        assert grid_sizes.shape[1] == 3, "Expected grid_sizes to be [B, 3] (T', H', W')"
+        temporal_features = []
+
+        for b in range(B):
+            T, H, W = grid_sizes[b].tolist()
+            expected_L = T * H * W
+            assert features[b].shape[0] == expected_L, f"Expected L={expected_L}, got {features[b].shape[0]}"
+            feat = features[b].view(T, H, W, D)  # [T, H, W, D]
+            temporal_features.append(feat)
+
+        temporal_features = torch.stack(temporal_features, dim=0)  # [B, T, H, W, D]
+        return temporal_features
 
 
 def read_video_frames(video_path, max_frames=129, resize=128, sample_fps=3):
@@ -215,33 +253,32 @@ def process_and_save_features(video_path, vae, model, text_encoder, output_path,
     with torch.no_grad():
         try:
             print("Calling model.forward to extract features...")
-            result = model(
-                latents, 
-                t=t, 
-                context=context, 
-                seq_len=seq_len,
-                return_features=True,
-                feature_layer=args.feature_layer
-            )
-            
-            # Handle different return types
-            if isinstance(result, tuple) and len(result) == 3:
-                out, features, grid_sizes = result
-            elif isinstance(result, tuple) and len(result) == 2:
-                out, features = result
-                grid_sizes = None
+            if args.return_temporal_features:
+                out, features, grid_sizes, temporal_features = model(
+                    latents, 
+                    t=t, 
+                    context=context, 
+                    seq_len=seq_len,
+                    return_features=False,
+                    return_temporal_features=True,
+                    feature_layer=args.feature_layer
+                )
             else:
-                print(f"Unexpected result type: {type(result)}")
-                if isinstance(result, list):
-                    features = result
-                    out = None
-                    grid_sizes = None
-                else:
-                    raise ValueError(f"Cannot extract features from result type: {type(result)}")
+                out, features, grid_sizes = model(
+                    latents, 
+                    t=t, 
+                    context=context, 
+                    seq_len=seq_len,
+                    return_features=True,
+                    return_temporal_features=False,
+                    feature_layer=args.feature_layer
+                )
             
             # Sanity check for output shapes
-            if features is None or len(features) == 0:
+            if features is None or len(features) == 0 and not args.return_temporal_features:
                 raise ValueError("Model returned empty features")
+            elif temporal_features is None or len(temporal_features) == 0 and args.return_temporal_features:
+                raise ValueError("Model returned empty temporal features")
             
             # Check feature shapes (first dimension should match batch size)
             batch_size = 1  # Assume batch size 1 for single video
@@ -268,6 +305,12 @@ def process_and_save_features(video_path, vae, model, text_encoder, output_path,
             out_to_save = out
         np.save(output_path, out_to_save.cpu().numpy())
         print(f"Saved unpatchified xDiT features to {output_path}, shape: {out_to_save.shape}")
+    elif args.return_temporal_features:
+        # Save temporal features in (C, T, H, W) format instead of (T, H, W, C)
+        # temporal_features is (T, H, W, C), so we need to permute axes
+        temporal_features_cthw = temporal_features.permute(3, 0, 1, 2).contiguous()
+        np.save(output_path, temporal_features_cthw.cpu().numpy())
+        print(f"Saved temporal features to {output_path}, shape: {temporal_features_cthw.shape}")
     else:
         features_np = [f.squeeze(0).cpu().numpy() if f.shape[0] == 1 else f.cpu().numpy() for f in features]
         np.save(output_path, features_np)
@@ -294,6 +337,8 @@ def main():
                          help='Enable verbose output including feature shapes.')
         parser.add_argument('--unpatchify_output', action='store_true',
                           help='If set, unpatchify the features before saving (output shape [C, F, H, W]).')
+        parser.add_argument('--return_temporal_features', action='store_true',
+                          help='If set, return temporal features.')
         args = parser.parse_args()
         
         # Load models
