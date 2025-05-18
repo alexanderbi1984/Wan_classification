@@ -13,31 +13,89 @@ class VAEFeatureProcessor(nn.Module):
         - in_channels (int): Number of input channels for the VAE features.
         - out_dim (int): Output feature dimension D after projection.
         - pretrained (bool): Whether to use a pretrained 3D ResNet backbone.
-    Processes VAE features using a 3D ResNet backbone and projects to (B, T, D).
-    Uses AdaptiveAvgPool3d((T,1,1)) to preserve the temporal dimension in a batch-wise, vectorized way.
-    The projection layer is explicitly initialized with Xavier uniform.
+    Uses a 3D ResNet-18 backbone with all temporal strides forced to 1,
+    so the time dimension T remains unchanged. Applies spatial pooling
+    and a linear projection to produce (B, T, D) features.
     """
-    def __init__(self, in_channels, out_dim, pretrained=False):
+    def __init__(self, in_channels: int, out_dim: int, pretrained: bool = False):
         super().__init__()
-        self.resnet3d = r3d_18(pretrained=pretrained)
+        # Load pretrained 3D ResNet-18
+        base = r3d_18(pretrained=pretrained)
+        # Adjust input channels if necessary
         if in_channels != 3:
-            self.resnet3d.stem[0] = nn.Conv3d(
-                in_channels, 64, kernel_size=(3, 7, 7),
-                stride=(1, 2, 2), padding=(1, 3, 3), bias=False
+            base.stem[0] = nn.Conv3d(
+                in_channels, 64,
+                kernel_size=(3, 7, 7),
+                stride=(1, 2, 2),
+                padding=(1, 3, 3),
+                bias=False
             )
-        self.resnet3d.avgpool = nn.Identity()
-        self.resnet3d.fc = nn.Identity()
-        self.pool = nn.AdaptiveAvgPool3d((None, 1, 1))  # Pool only spatial dims, keep time
+        # Remove final pooling & fc layers
+        modules = list(base.children())[:-2]
+        self.backbone = nn.Sequential(*modules)
+        # Force all Conv3d temporal strides to 1 to preserve T
+        for m in self.backbone.modules():
+            if isinstance(m, nn.Conv3d):
+                s = m.stride
+                m.stride = (1, s[1], s[2])
+        # Spatial pooling only (keep time dim)
+        self.pool = nn.AdaptiveAvgPool3d((None, 1, 1))
+        # Final projection from 512 to out_dim
         self.proj = nn.Linear(512, out_dim)
         nn.init.xavier_uniform_(self.proj.weight)
         nn.init.zeros_(self.proj.bias)
 
-    def forward(self, x):
-        feats = self.resnet3d(x)  # (B, 512, T, H', W')
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # x: (B, C, T, H, W)
+        feats = self.backbone(x)  # (B, 512, T, H', W')
+        # Temporarily disable deterministic checks for pooling
+        prev = torch.are_deterministic_algorithms_enabled()
+        # torch.use_deterministic_algorithms(False)
         feats = self.pool(feats)  # (B, 512, T, 1, 1)
-        feats = feats.squeeze(-1).squeeze(-1).transpose(1, 2)  # (B, T, 512)
-        out = self.proj(feats)  # (B, T, D)
+        # torch.use_deterministic_algorithms(prev)
+        # Collapse spatial dims, keep time
+        feats = feats.squeeze(-1).squeeze(-1)     # (B, 512, T)
+        feats = feats.transpose(1, 2)             # (B, T, 512)
+        # Project to (B, T, D)
+        out = self.proj(feats)
         return out
+
+
+
+    # def __init__(self, in_channels, out_dim, pretrained=False):
+    #     super().__init__()
+    #     self.resnet3d = r3d_18(pretrained=pretrained)
+    #     if in_channels != 3:
+    #         self.resnet3d.stem[0] = nn.Conv3d(
+    #             in_channels, 64, kernel_size=(3, 7, 7),
+    #             stride=(1, 2, 2), padding=(1, 3, 3), bias=False
+    #         )
+    #     self.resnet3d.avgpool = nn.Identity()
+    #     self.resnet3d.fc = nn.Identity()
+    #     self.pool = nn.AdaptiveAvgPool3d((None, 1, 1))  # Pool only spatial dims, keep time
+    #     self.proj = nn.Linear(512, out_dim)
+    #     nn.init.xavier_uniform_(self.proj.weight)
+    #     nn.init.zeros_(self.proj.bias)
+
+    # def forward(self, x):
+    #     print("[DEBUG] VAEFeatureProcessor input type:", type(x), "shape:", getattr(x, 'shape', None))
+    #     assert isinstance(x, torch.Tensor), f"Expected tensor, got {type(x)}"
+    #     assert x.ndim >= 4, f"VAEFeatureProcessor input shape: {x.shape}"
+    #     feats = self.resnet3d(x)  # (B, 512, T, H', W') or (B, 512, T) or (B, 512, T, 1, 1)
+    #     print("[DEBUG] feats shape after resnet3d:", feats.shape)
+    #     # Ensure feats is 5D for AdaptiveAvgPool3d
+    #     if feats.dim() == 3:
+    #         # (B, 512, T) -> (B, 512, T, 1, 1)
+    #         feats = feats.unsqueeze(-1).unsqueeze(-1)
+    #     elif feats.dim() == 4:
+    #         # (B, 512, T, 1) -> (B, 512, T, 1, 1)
+    #         feats = feats.unsqueeze(-1)
+    #     # Only pool if not already pooled spatially
+    #     if feats.shape[-2:] != (1, 1):
+    #         feats = self.pool(feats)  # (B, 512, T, 1, 1)
+    #     feats = feats.squeeze(-1).squeeze(-1).transpose(1, 2)  # (B, T, 512)
+    #     out = self.proj(feats)  # (B, T, D)
+    #     return out
 
 class XDiTFeatureProcessor(nn.Module):
     """
@@ -477,6 +535,13 @@ class MultimodalMultiTaskCoralClassifier(pl.LightningModule):
         vae_x, xdit_x, pain_labels, stim_labels = batch
         pain_logits, stim_logits = self(vae_x, xdit_x)
         self._update_metrics(pain_logits, stim_logits, pain_labels, stim_labels, stage='val')
+        # Log validation metrics for early stopping and progress bar
+        self.log('val_pain_MAE', self.val_pain_mae, on_step=False, on_epoch=True, prog_bar=True, logger=True)
+        self.log('val_pain_QWK', self.val_pain_qwk, on_step=False, on_epoch=True, prog_bar=True, logger=True)
+        self.log('val_pain_Accuracy', self.val_pain_acc, on_step=False, on_epoch=True, prog_bar=True, logger=True)
+        self.log('val_stim_MAE', self.val_stim_mae, on_step=False, on_epoch=True, prog_bar=True, logger=True)
+        self.log('val_stim_QWK', self.val_stim_qwk, on_step=False, on_epoch=True, prog_bar=True, logger=True)
+        self.log('val_stim_Accuracy', self.val_stim_acc, on_step=False, on_epoch=True, prog_bar=True, logger=True)
         return {}
 
     def test_step(self, batch, batch_idx):

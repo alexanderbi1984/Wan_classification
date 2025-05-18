@@ -17,8 +17,9 @@ class BioVidDataset(Dataset):
             subject_ids: list/set of subject ids to include
             transform: Optional transforms
             use_video_fallback: (unused)
-            temporal_pooling: 'mean', 'max', or 'sample'
+            temporal_pooling: 'mean', 'max', 'sample', or 'none'
                 'sample' will randomly select 5 frames (pad with zeros if not enough)
+                'none' will keep the temporal dimension (no pooling)
             flatten: If True, return features as 1D. If False, return spatial/temporal shape as processed.
             input_format: Format of input features, either 'CTHW' for [C,T,H,W] or 'TCHW' for [T,C*H*W]
         """
@@ -84,6 +85,8 @@ class BioVidDataset(Dataset):
                     pad_shape[1] = T_target - T_actual
                     pad = torch.zeros(pad_shape, dtype=arr.dtype, device=arr.device)
                     arr = torch.cat([arr, pad], dim=1)
+            elif self.temporal_pooling == 'none':
+                pass  # Do not pool, keep temporal dimension
             if self.flatten:
                 arr = arr.view(-1)
             self._example_shape = tuple(arr.shape)
@@ -141,6 +144,8 @@ class BioVidDataset(Dataset):
                     pad_shape[1] = T_target - T_actual
                     pad = torch.zeros(pad_shape, dtype=arr.dtype, device=arr.device)
                     arr = torch.cat([arr, pad], dim=1)
+            elif self.temporal_pooling == 'none':
+                pass  # Do not pool, keep temporal dimension
             else:
                 raise ValueError(f"Invalid temporal_pooling: {self.temporal_pooling}")
             if self.flatten:
@@ -172,6 +177,21 @@ class BioVidDataset(Dataset):
 
 class BioVidDataModule(pl.LightningDataModule):
     def __init__(self, features_path, meta_path, batch_size=32, num_workers=4, split_ratio=0.8, seed=42, use_video_fallback=False, temporal_pooling='mean', flatten=True, input_format='CTHW'):
+        """
+        Args:
+            features_path: Path to npy feature folder
+            meta_path: Path to meta.json
+            batch_size: Batch size for DataLoader
+            num_workers: Number of workers for DataLoader
+            split_ratio: Ratio of subjects to include in training set
+            seed: Random seed for splitting subjects
+            use_video_fallback: (unused)
+            temporal_pooling: 'mean', 'max', 'sample', or 'none'.
+                'sample' randomly picks 5 frames, pads if short.
+                'none' keeps the temporal dimension (no pooling).
+            flatten: If True, return features as 1D. If False, return spatial/temporal shape as processed.
+            input_format: Format of input features, either 'CTHW' for [C,T,H,W] or 'TCHW' for [T,C*H*W]
+        """
         super().__init__()
         self.features_path = features_path
         self.meta_path = meta_path

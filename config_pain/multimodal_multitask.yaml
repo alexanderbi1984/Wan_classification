@@ -1,0 +1,125 @@
+# Template config for Multimodal Multi-Task Ordinal Classification (Pain/Stimulus)
+# Place this in Wan_classification/config_pain/
+
+run_name: multimodal_example_run
+
+# Model parameters
+# model_params:
+#   vae_in_channels: 16   # REQUIRED: Number of channels for VAE features
+#   xdit_in_channels: 1536   # REQUIRED: Number of channels for xDiT features
+#   vae_processor: resnet3d
+#   xdit_processor: linear_bn
+#   fusion_type: cat_proj_bn_relu
+#   feature_dim: 128
+#   fusion_dim: 128
+#   temporal_encoder: gru
+#   temporal_dim: 128
+#   pooling: mean
+#   shared_mlp_dim: 64
+#   shared_mlp_hidden_dims: [128, 64]
+#   shared_mlp_dropout: 0.2
+#   dropout: 0.2
+#   num_heads: 2
+#   # Add any other model-specific params here
+model_params:
+  vae_in_channels: 16
+  xdit_in_channels: 1536
+  feature_dim: 256
+  fusion_dim: 256
+  num_pain_classes: 5
+  num_stimulus_classes: 5
+  temporal_encoder_dim: 512  # optional, can be ignored
+  shared_mlp_hidden_dims: [256, 128]
+  shared_mlp_dropout: 0.5
+  fusion_dropout: 0.1
+  fusion_activation: relu
+  fusion_use_residual: false
+  fusion_use_layernorm: false
+  temporal_encoder_type: gru
+  temporal_encoder_nhead: 8  #for transformer use
+  temporal_encoder_num_layers: 2 #for both gru and transformer
+  temporal_encoder_dropout: 0.2
+  temporal_encoder_max_len: 512
+  temporal_encoder_use_layernorm: false
+  temporal_pooling_type: mean
+  # learning_rate: 1e-4
+  # optimizer_name: AdamW
+  # weight_decay: 0.01
+  # pain_loss_weight: 1.0
+  # stim_loss_weight: 1.0
+  # label_smoothing: 0.1
+  # use_distance_penalty: true
+  # focal_gamma: null
+  # class_weights: null
+  # use_lr_scheduler: true
+  # monitor_metric: val_pain_QWK
+  # lr_factor: 0.5
+  # lr_patience: 5
+  # min_lr: 1e-6
+
+# Syracuse dataset settings
+syracuse_settings:
+  vae_feature_dir: "/home/nbi/marlin/wan_features/"
+  xdit_feature_dir: "/home/nbi/marlin/wan_xDiT_features/"
+  meta_path: "/home/nbi/marlin/wan_features/meta.json"
+  task: classification
+  thresholds: [1.0, 3.0, 5.0, 7.0]
+  num_classes_pain: 5
+  cv_fold: 0
+  balanced_sampling: false
+  temporal_pooling: none 
+  flatten: false
+
+# BioVid dataset settings
+biovid_settings:
+  vae_feature_dir: "/home/nbi/marlin/wan_features/"
+  xdit_feature_dir: "/home/nbi/marlin/wan_xDiT_features/"
+  meta_path: "/home/nbi/marlin/wan_features/meta.json"
+  num_classes_stimulus: 5
+  split_ratio: 0.8
+  temporal_pooling: none
+  flatten: false
+
+# Trainer and experiment settings
+trainer_params:
+  batch_size: 32
+  num_workers: 4
+  precision: 32
+  max_epochs: 2000
+  early_stop_patience: 200
+  model_summary_depth: 2
+  monitor_metric: val_pain_QWK  # or val_pain_MAE
+  seed: 42
+  profiler: null  # 'simple', 'advanced', or null
+  # Advanced callbacks/logging
+  use_rich_progress_bar: true
+  use_swa: false
+  swa_epoch_start: 0.8
+  use_gradient_accum: false
+  grad_accum_schedule: {0: 1}
+  use_wandb: false
+  wandb_project: multimodal_pain
+  use_comet: false
+  comet_project: multimodal_pain
+
+# Optimizer settings
+optimizer_params:
+  optimizer: AdamW
+  lr: 1.0e-4
+  weight_decay: 1.0e-4
+  pain_loss_weight: 1.0
+  stim_loss_weight: 1.0
+  label_smoothing: 0.0
+  use_distance_penalty: true
+  focal_gamma: None
+  class_weights: None #not properly implemented yet
+  use_lr_scheduler: true
+
+# LR scheduler settings
+lr_scheduler_params:
+  use_scheduler: true
+  factor: 0.1
+  patience: 10
+  min_lr: 1e-6
+
+# Add any other custom sections as needed 

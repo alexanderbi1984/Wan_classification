@@ -17,8 +17,9 @@ class SyracuseDataset(Dataset):
     """
     PyTorch dataset for Syracuse video features with pain levels and optional class label thresholds.
     Args:
-        temporal_pooling: 'mean', 'max', or 'sample'.
+        temporal_pooling: 'mean', 'max', 'sample', or 'none'.
             'sample' will randomly select 4 frames (pad with zeros if not enough).
+            'none' will keep the temporal dimension (no pooling).
     """
     def __init__(self, meta_path, source_filter, video_ids=None, task="classification", thresholds=None, transform=None, set_name=None, temporal_pooling='mean', flatten=True):
         self.meta_path = meta_path
@@ -89,6 +90,8 @@ class SyracuseDataset(Dataset):
                     pad_shape[1] = T_target - T_actual
                     pad = torch.zeros(pad_shape, dtype=arr.dtype, device=arr.device)
                     arr = torch.cat([arr, pad], dim=1)
+            elif self.temporal_pooling == 'none':
+                pass  # Do not pool, keep temporal dimension
             if self.flatten:
                 arr = arr.view(-1)
             self._example_shape = tuple(arr.shape)
@@ -145,6 +148,8 @@ class SyracuseDataset(Dataset):
                 pad_shape[1] = T_target - T_actual
                 pad = torch.zeros(pad_shape, dtype=arr.dtype, device=arr.device)
                 arr = torch.cat([arr, pad], dim=1)
+        elif self.temporal_pooling == 'none':
+            pass  # Do not pool, keep temporal dimension
         else:
             raise ValueError(f"Invalid temporal_pooling: {self.temporal_pooling}")
         if self.flatten:
@@ -184,8 +189,9 @@ class SyracuseDataModule(pl.LightningDataModule):
     PyTorch Lightning DataModule for the Syracuse dataset with pain level as ground truth and YAML-configurable classification.
     Provides cross-validation splits and optional balanced sampling for classification.
     Args:
-        temporal_pooling: 'mean', 'max', or 'sample'.
+        temporal_pooling: 'mean', 'max', 'sample', or 'none'.
             'sample' randomly picks 4 frames, pads if short.
+            'none' keeps the temporal dimension (no pooling).
     """
     def __init__(self, meta_path, task: str = "classification", thresholds: list = None, batch_size=32, num_workers=4, cv_fold=3, seed=42,
                  balanced_sampling=False, transform=None, temporal_pooling='mean', flatten=True):
