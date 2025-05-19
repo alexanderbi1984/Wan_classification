@@ -367,7 +367,7 @@ def main():
                             temp_optimizer_cfg['optimizer_name'] = temp_optimizer_cfg.pop('optimizer_type')
                         hparams_for_load.update(temp_optimizer_cfg)
 
-                        if lr_scheduler_cfg_fold.get("use_scheduler", False): # Use lr_scheduler_cfg_fold here
+                        if lr_scheduler_cfg_fold.get("use_lr_scheduler", False): # Use lr_scheduler_cfg_fold here
                             hparams_for_load.update({
                                 "use_lr_scheduler": True,
                                 "lr_factor": lr_scheduler_cfg_fold.get("factor", 0.1), # Use lr_scheduler_cfg_fold

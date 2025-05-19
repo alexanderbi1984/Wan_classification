@@ -89,6 +89,7 @@ trainer_params:
   early_stop_patience: 200
   model_summary_depth: 2
   monitor_metric: val_pain_QWK  # or val_pain_MAE
+  monitor_mode: max
   seed: 42
   profiler: null  # 'simple', 'advanced', or null
   # Advanced callbacks/logging
@@ -104,22 +105,24 @@ trainer_params:
 
 # Optimizer settings
 optimizer_params:
-  optimizer: AdamW
-  lr: 1.0e-4
+  optimizer_name: AdamW
+  # lr: 1.0e-4
+  learning_rate: 1.0e-4
   weight_decay: 1.0e-4
   pain_loss_weight: 1.0
   stim_loss_weight: 1.0
   label_smoothing: 0.0
   use_distance_penalty: true
-  focal_gamma: None
-  class_weights: None #not properly implemented yet
+  focal_gamma: null
+  class_weights: null #not properly implemented yet
   use_lr_scheduler: true
+  # use_scheduler: true
 
 # LR scheduler settings
 lr_scheduler_params:
   use_scheduler: true
-  factor: 0.1
-  patience: 10
+  lr_factor: 0.1
+  lr_patience: 10
   min_lr: 1e-6
 
 # Add any other custom sections as needed 

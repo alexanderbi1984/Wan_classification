@@ -326,6 +326,11 @@ class MultimodalMultiTaskCoralClassifier(pl.LightningModule):
                  label_smoothing=0.0,
                  use_distance_penalty=False,
                  focal_gamma=None,
+                 use_lr_scheduler=False,
+                 lr_factor=0.1,
+                 lr_patience=10,
+                 min_lr=1e-6,
+                 monitor_metric='val_stim_QWK',
                  class_weights=None):
         super().__init__()
         self.save_hyperparameters()

@@ -85,6 +85,7 @@ def main():
     num_workers = trainer_cfg.get("num_workers", 4)
     precision = trainer_cfg.get("precision", "32")
     monitor_metric = trainer_cfg.get("monitor_metric", "val_pain_QWK")
+    monitor_mode = trainer_cfg.get("monitor_mode", "max")
     early_stop_patience = trainer_cfg.get("early_stop_patience", 20)
     max_epochs = trainer_cfg.get("max_epochs", 75)
     model_summary_depth = trainer_cfg.get("model_summary_depth", 2)
@@ -158,7 +159,7 @@ def main():
                 hparams_model["use_lr_scheduler"] = False
             hparams_model["num_pain_classes"] = syracuse_cfg.get("num_classes_pain")
             hparams_model["num_stimulus_classes"] = biovid_cfg.get("num_classes_stimulus")
-            model = MultimodalMultiTaskCoralClassifier(**model_cfg)
+            model = MultimodalMultiTaskCoralClassifier(**hparams_model)
             # Callbacks/logging
             tb_logger = TensorBoardLogger(logs_dir, name=run_name)
             csv_logger = CSVLogger(logs_dir, name=f"{run_name}_csv", version=fold_timestamp)
@@ -168,13 +169,13 @@ def main():
                 save_last=True,
                 filename=checkpoint_name + "-{epoch}-{" + monitor_metric + ":.3f}",
                 monitor=monitor_metric,
-                mode="max" if "QWK" in monitor_metric else "min",
+                mode=monitor_mode,
                 save_top_k=1,
                 verbose=True
             )
             early_stop_callback = EarlyStopping(
                 monitor=monitor_metric,
-                mode="max" if "QWK" in monitor_metric else "min",
+                mode=monitor_mode,
                 patience=early_stop_patience,
                 verbose=True
             )
@@ -260,7 +261,7 @@ def main():
         # Remove 'optimizer' key if present, use 'optimizer_name' instead
         if 'optimizer' in hparams_model:
             hparams_model['optimizer_name'] = hparams_model.pop('optimizer')
-        if lr_scheduler_cfg.get("use_scheduler", False):
+        if lr_scheduler_cfg.get("use_lr_scheduler", False):
             hparams_model.update({
                 "use_lr_scheduler": True,
                 "lr_factor": lr_scheduler_cfg.get("factor", 0.1),
@@ -281,13 +282,13 @@ def main():
             save_last=True,
             filename=checkpoint_name + "-{epoch}-{" + monitor_metric + ":.3f}",
             monitor=monitor_metric,
-            mode="max" if "QWK" in monitor_metric else "min",
+            mode=monitor_mode,
             save_top_k=1,
             verbose=True
         )
         early_stop_callback = EarlyStopping(
             monitor=monitor_metric,
-            mode="max" if "QWK" in monitor_metric else "min",
+            mode=monitor_mode,
             patience=early_stop_patience,
             verbose=True
         )

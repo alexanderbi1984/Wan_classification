@@ -364,3 +364,92 @@ class SyracuseMultimodalDataModule(pl.LightningDataModule):
             return self.train_dataset.example_shape
         else:
             return None 
+
+class BioVidMultimodalDataModule(pl.LightningDataModule):
+    """
+    PyTorch Lightning DataModule for the BioVid multimodal dataset with 5-class classification.
+    Uses a fixed validation subject list (hardcoded) and all other subjects for training.
+    Mirrors the interface of SyracuseMultimodalDataModule but is simplified for BioVid.
+    """
+    # Hardcoded validation subject list (26 subjects)
+    VAL_SUBJECTS = [
+        # 5 with low expression
+        "100914", "101114", "082315", "083114", "083109",
+        # 7 (20-35)
+        "072514", "080309", "112016", "112310", "092813", "112809", "112909",
+        # 7 (36-50)
+        "071313", "101309", "101609", "091809", "102214", "102316", "112009",
+        # 7 (51-65)
+        "101814", "101908", "102309", "112209", "112610", "112914", "120514"
+    ]
+
+    def __init__(self, vae_feature_dir, xdit_feature_dir, meta_path, batch_size=32, num_workers=4, transform=None, temporal_pooling='mean', flatten=True, seed=42):
+        super().__init__()
+        self.vae_feature_dir = vae_feature_dir
+        self.xdit_feature_dir = xdit_feature_dir
+        self.meta_path = meta_path
+        self.batch_size = batch_size
+        self.num_workers = num_workers
+        self.transform = transform
+        self.temporal_pooling = temporal_pooling
+        self.flatten = flatten
+        self.seed = seed
+        self.train_dataset = None
+        self.val_dataset = None
+
+    def setup(self, stage: Optional[str] = None):
+        with open(self.meta_path, 'r') as f:
+            meta = json.load(f)
+        val_subjects = set(self.VAL_SUBJECTS)
+        train_subjects = set()
+        for entry in meta.values():
+            if entry.get('source') == 'biovid':
+                sid = entry['subject_id']
+                if sid not in val_subjects:
+                    train_subjects.add(sid)
+        self.train_dataset = BioVidMultimodalDataset(
+            self.vae_feature_dir,
+            self.xdit_feature_dir,
+            self.meta_path,
+            transform=self.transform,
+            subject_ids=train_subjects,
+            temporal_pooling=self.temporal_pooling,
+            flatten=self.flatten
+        )
+        self.val_dataset = BioVidMultimodalDataset(
+            self.vae_feature_dir,
+            self.xdit_feature_dir,
+            self.meta_path,
+            transform=self.transform,
+            subject_ids=val_subjects,
+            temporal_pooling=self.temporal_pooling,
+            flatten=self.flatten
+        )
+        # Optionally print class distributions
+        train_labels = [s['label'] for s in self.train_dataset.samples if 'label' in s]
+        val_labels = [s['label'] for s in self.val_dataset.samples if 'label' in s]
+        print(f"[INFO] BioVid Train class dist: {Counter(train_labels)}")
+        print(f"[INFO] BioVid Val class dist: {Counter(val_labels)}")
+
+    def train_dataloader(self):
+        generator = torch.Generator().manual_seed(self.seed)
+        return DataLoader(self.train_dataset, batch_size=self.batch_size, num_workers=self.num_workers, shuffle=True, generator=generator)
+
+    def val_dataloader(self):
+        generator = torch.Generator().manual_seed(self.seed)
+        return DataLoader(self.val_dataset, batch_size=self.batch_size, num_workers=self.num_workers, shuffle=False, generator=generator)
+
+    def __repr__(self):
+        s = f"<BioVidMultimodalDataModule: batch_size={self.batch_size}, num_workers={self.num_workers}, config={os.path.basename(self.meta_path)}>\n"
+        if hasattr(self, 'train_dataset'):
+            s += f"Train: {self.train_dataset}\n"
+        if hasattr(self, 'val_dataset'):
+            s += f"Val: {self.val_dataset}"
+        return s
+
+    @property
+    def example_shape(self):
+        if hasattr(self, 'train_dataset') and self.train_dataset is not None:
+            return self.train_dataset.example_shape
+        else:
+            return None 
