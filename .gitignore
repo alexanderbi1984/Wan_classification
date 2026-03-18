@@ -1,39 +1,60 @@
+# ===== Hidden files =====
 .*
+!.gitignore
+
+# ===== Compiled / cache =====
 *.py[cod]
-# *.jpg
-*.jpeg
-# *.png
-*.gif
-*.bmp
+__pycache__/
+*.egg-info/
+
+# ===== Media =====
 *.mp4
 *.mov
 *.mkv
-*.log
-*.zip
+*.gif
+*.bmp
+*.jpeg
+
+# ===== Binary / model weights =====
 *.pt
 *.pth
 *.npy
 *.ckpt
 *.safetensors
-*.json
-# *.txt
-*.backup
 *.pkl
-*.html
-*.pdf
 *.whl
-cache
-__pycache__/
+
+# ===== Runtime / generated =====
+*.log
+*.backup
+*.html
+cache/
 storage/
 samples/
-!.gitignore
-!requirements.txt
+generated_video/
+
+# ===== OS =====
 .DS_Store
 *DS_Store
-google/
+
+# ===== Model checkpoints (very large) =====
 Wan2.1-T2V-14B/
 Wan2.1-T2V-1.3B/
 Wan2.1-I2V-14B-480P/
 Wan2.1-I2V-14B-720P/
-poetry.lock
+Wan2.1-FLF2V-14B-720P/
+Qwen2.5-VL-3B/
+
+# ===== Experiment outputs =====
 results/
+logs/
+wandb/
+
+# ===== Other large / non-essential =====
+poetry.lock
+google/
+chat/
+examples/female/
+examples/female_alt/
+examples/male/
+prompt_embeddings.pt
