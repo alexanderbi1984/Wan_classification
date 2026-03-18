@@ -1,0 +1,91 @@
+# ============================================================================
+# LoRA Fine-tuning: Wan 14B DiT — Binary Classification BL1 vs PA1
+# ============================================================================
+# Diagnostic: can the model separate BL1 from PA1 (the hardest pair)?
+# Uses CE loss (natural choice for 2-class).
+# ============================================================================
+
+run_name: wan_lora_14B_biovid_binary_bl1_pa1
+
+# ---------- Data ----------
+data:
+  labels_csv: /data/home/nbi1/BioVid/biovid_pain_labels.csv
+  frames_root: /data/home/nbi1/BioVid/biovid_cropped_frames/
+  num_classes: 2
+  class_subset: [0, 1]           # BL1=0 → class 0, PA1=1 → class 1
+  resize: 128
+  max_frames: 129
+  sample_rate: 2
+
+# ---------- Augmentation (aug2 level) ----------
+augmentation:
+  hflip_prob: 0.5
+  jitter_prob: 0.8
+  jitter_brightness: 0.5
+  jitter_contrast: 0.5
+  jitter_saturation: 0.4
+  jitter_hue: 0.15
+  grayscale_prob: 0.3
+  erasing_prob: 0.4
+  erasing_scale: [0.05, 0.4]
+  advanced_aug_prob: 0.6
+  augmix_weight: 0.0
+  augmix_severity: 4
+
+# ---------- Model ----------
+model_params:
+  wan_checkpoint_dir: /data/home/nbi1/Wan_classification/Wan2.1-T2V-14B
+  vae_checkpoint: /data/home/nbi1/Wan_classification/Wan2.1-T2V-14B/Wan2.1_VAE.pth
+  vae_in_channels: 16
+  xdit_in_channels: 5120
+  feature_dim: 128
+  fusion_dim: 128
+  shared_mlp_hidden_dims: null
+  shared_mlp_dropout: 0.5
+  fusion_dropout: 0.0
+  fusion_activation: relu
+  fusion_use_residual: false
+  fusion_use_layernorm: false
+  temporal_encoder_type: gru
+  temporal_encoder_nhead: 8
+  temporal_encoder_num_layers: 2
+  temporal_encoder_dropout: 0.2
+  temporal_encoder_max_len: 512
+  temporal_encoder_use_layernorm: false
+  temporal_pooling_type: mean
+  label_smoothing: 0.0
+  use_distance_penalty: false
+  focal_gamma: null
+  dit_feature_layer: -1
+  dit_timestep: 0.0
+  coral_alpha: 0.0
+  ce_alpha: 1.0
+  eval_head: ce
+  ce_label_smoothing: 0.05
+
+# ---------- LoRA ----------
+lora_params:
+  rank: 4
+  alpha: 1.0
+  target_modules: null
+  use_gradient_checkpointing: true
+
+# ---------- Optimizer ----------
+optimizer_params:
+  lr_backbone: 5.0e-5
+  lr_head: 1.0e-3
+  weight_decay: 0.01
+
+# ---------- Training ----------
+train:
+  batch_size: 24
+  num_workers: 8
+  accumulate_grad_batches: 1
+  max_epochs: 200
+  precision: bf16-mixed
+  gradient_clip_val: 1.0
+  early_stop_patience: 10
+  monitor_metric: val_pain_QWK
+  model_summary_depth: 3
+  seed: 42
+  strategy: auto
