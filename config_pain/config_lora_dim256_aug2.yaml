@@ -1,0 +1,96 @@
+# ============================================================================
+# LoRA Fine-tuning: Wan 14B DiT backbone for BioVid Pain Classification
+# ============================================================================
+# dim256 + stronger augmentation (aug2)
+# ============================================================================
+
+run_name: wan_lora_14B_biovid_dim256_aug2
+
+# ---------- Data (BioVid — same dataset as MMA project) ----------
+data:
+  labels_csv: /data/home/nbi1/BioVid/biovid_pain_labels.csv
+  frames_root: /data/home/nbi1/BioVid/biovid_cropped_frames/
+  num_classes: 5              # BioVid pain levels: 0 (BL1) to 4 (PA4)
+  resize: 128                 # Spatial resolution for input frames
+  max_frames: 129             # Max frames per video
+  sample_rate: 2              # Take every 2nd frame (temporal subsampling)
+
+# ---------- Augmentation (train only, applied per-clip) — STRONGER ----------
+augmentation:
+  hflip_prob: 0.5             # Random horizontal flip
+  jitter_prob: 0.8            # Very aggressive color jitter
+  jitter_brightness: 0.5
+  jitter_contrast: 0.5
+  jitter_saturation: 0.4
+  jitter_hue: 0.15
+  grayscale_prob: 0.3         # Random grayscale conversion
+  erasing_prob: 0.4           # Random erasing / cutout
+  erasing_scale: [0.05, 0.4]  # Up to 40% area erased
+  advanced_aug_prob: 0.6      # TrivialAugmentWide applied more often
+  augmix_weight: 0.0          # 0 = TrivialAugment only
+  augmix_severity: 4
+
+# ---------- Model (Wan 14B T2V DiT backbone) ----------
+model_params:
+  wan_checkpoint_dir: /data/home/nbi1/Wan_classification/Wan2.1-T2V-14B
+  vae_checkpoint: /data/home/nbi1/Wan_classification/Wan2.1-T2V-14B/Wan2.1_VAE.pth
+
+  # Feature dimensions (must match model)
+  vae_in_channels: 16         # VAE latent channels (always 16)
+  xdit_in_channels: 5120      # DiT hidden dim: 5120 for 14B, 1536 for 1.3B
+
+  # Downstream head architecture
+  feature_dim: 256
+  fusion_dim: 256
+  shared_mlp_hidden_dims: null
+  shared_mlp_dropout: 0.5
+
+  # Fusion
+  fusion_dropout: 0.0
+  fusion_activation: relu
+  fusion_use_residual: false
+  fusion_use_layernorm: false
+
+  # Temporal encoder
+  temporal_encoder_type: gru
+  temporal_encoder_nhead: 8
+  temporal_encoder_num_layers: 2
+  temporal_encoder_dropout: 0.2
+  temporal_encoder_max_len: 512
+  temporal_encoder_use_layernorm: false
+  temporal_pooling_type: mean
+
+  # Loss
+  label_smoothing: 0.05
+  use_distance_penalty: false
+  focal_gamma: null
+
+  # DiT feature extraction
+  dit_feature_layer: -1       # -1 = last block
+
+# ---------- LoRA Parameters ----------
+lora_params:
+  rank: 4                     # LoRA rank (4-8 for 14B)
+  alpha: 1.0                  # Scaling = alpha / rank
+  target_modules: null        # null = default [q, k, v, o]
+  use_gradient_checkpointing: true  # Essential for 14B VRAM budget
+
+# ---------- Optimizer ----------
+optimizer_params:
+  lr_backbone: 5.0e-5         # LoRA params: lower LR
+  lr_head: 1.0e-3             # Downstream head: higher LR
+  weight_decay: 0.01
+
+# ---------- Training ----------
+train:
+  batch_size: 24
+  num_workers: 8
+  accumulate_grad_batches: 1  # Effective batch = 24*1*4GPU = 96
+  max_epochs: 200
+  precision: bf16-mixed
+  gradient_clip_val: 1.0
+  early_stop_patience: 20
+  monitor_metric: val_pain_QWK
+  model_summary_depth: 3
+  seed: 42
+  strategy: auto              # 'auto' for single GPU, 'ddp' for multi-GPU
