@@ -265,13 +265,18 @@ class OnlineMultimodalClassifier(pl.LightningModule):
 
         # CORAL ordinal heads (K-1 threshold logits)
         self.pain_head = nn.Linear(encoder_output_dim, num_pain_classes - 1)
-        self.stimulus_head = nn.Linear(encoder_output_dim, num_stimulus_classes - 1)
+        self._use_stim = (stim_loss_weight > 0.0)
+        if self._use_stim:
+            self.stimulus_head = nn.Linear(encoder_output_dim, num_stimulus_classes - 1)
+        else:
+            self.stimulus_head = None
 
         # CE classification heads (K class logits) — only created when ce_alpha > 0
         self._use_ce = ce_alpha > 0.0
         if self._use_ce:
             self.ce_pain_head = nn.Linear(encoder_output_dim, num_pain_classes)
-            self.ce_stim_head = nn.Linear(encoder_output_dim, num_stimulus_classes)
+            if self._use_stim:
+                self.ce_stim_head = nn.Linear(encoder_output_dim, num_stimulus_classes)
             print(f"[OnlineMultimodalClassifier] Hybrid loss: "
                   f"coral_alpha={coral_alpha}, ce_alpha={ce_alpha}, eval_head={eval_head}")
 
@@ -339,13 +344,13 @@ class OnlineMultimodalClassifier(pl.LightningModule):
         pooled = self.temporal_pooling(encoded)           # (B, fusion_dim)
         shared = self.shared_encoder(pooled)              # (B, encoder_output_dim)
 
-        out = {
-            "pain_coral": self.pain_head(shared),         # (B, K_pain - 1)
-            "stim_coral": self.stimulus_head(shared),     # (B, K_stim - 1)
-        }
+        out = {"pain_coral": self.pain_head(shared)}
+        if self._use_stim:
+            out["stim_coral"] = self.stimulus_head(shared)
         if self._use_ce:
-            out["pain_ce"] = self.ce_pain_head(shared)    # (B, K_pain)
-            out["stim_ce"] = self.ce_stim_head(shared)    # (B, K_stim)
+            out["pain_ce"] = self.ce_pain_head(shared)
+            if self._use_stim:
+                out["stim_ce"] = self.ce_stim_head(shared)
         return out
 
     def _extract_dit_features(self, vae_latents: torch.Tensor) -> torch.Tensor:
@@ -519,7 +524,7 @@ class OnlineMultimodalClassifier(pl.LightningModule):
                 getattr(self, f"{stage}_pain_cm").update(p_preds, p_labels)
 
         valid_stim = stim_labels != -1
-        if valid_stim.any():
+        if valid_stim.any() and stim_key in out:
             s_logits = out[stim_key][valid_stim]
             s_labels = stim_labels[valid_stim]
             s_preds = self._logits_to_preds(s_logits, self.hparams.num_stimulus_classes, head_type)
@@ -575,7 +580,7 @@ class OnlineMultimodalClassifier(pl.LightningModule):
         pain_loss = coral_alpha * pain_coral_loss + ce_alpha * pain_ce_loss
 
         valid_stim = stim_labels != -1
-        if valid_stim.any() and coral_alpha > 0:
+        if valid_stim.any() and coral_alpha > 0 and "stim_coral" in out:
             stim_coral_loss = self.coral_loss(
                 out["stim_coral"][valid_stim], stim_labels[valid_stim],
                 label_smoothing=0.0,
@@ -585,7 +590,7 @@ class OnlineMultimodalClassifier(pl.LightningModule):
         else:
             stim_coral_loss = torch.tensor(0.0, device=self.device)
 
-        if valid_stim.any() and ce_alpha > 0 and self._use_ce:
+        if valid_stim.any() and ce_alpha > 0 and self._use_ce and "stim_ce" in out:
             stim_ce_loss = self._compute_ce_loss(
                 out["stim_ce"][valid_stim], stim_labels[valid_stim]
             )
@@ -606,12 +611,20 @@ class OnlineMultimodalClassifier(pl.LightningModule):
         mixup_alpha = self.hparams.get("mixup_alpha", 0.0)
 
         if mixup_alpha > 0.0 and self.training:
-            # Video-level MixUp: blend two samples to disrupt identity cues
+            # Video-level MixUp: blend two samples to disrupt identity cues.
+            # Only mix samples that both have valid labels (>= 0).
+            valid = (pain_labels >= 0)
             lam = torch.distributions.Beta(mixup_alpha, mixup_alpha).sample().item()
             B = video.size(0)
             perm = torch.randperm(B, device=video.device)
 
-            video_mixed = lam * video + (1.0 - lam) * video[perm]
+            # Fall back to standard training if permuted labels contain invalids
+            both_valid = valid & (pain_labels[perm] >= 0)
+            if both_valid.all():
+                video_mixed = lam * video + (1.0 - lam) * video[perm]
+            else:
+                video_mixed = video
+                lam = 1.0
             out = self(video_mixed)
 
             loss_a, pain_loss_a, stim_loss_a, pain_coral_a, pain_ce_a = \
@@ -670,9 +683,9 @@ class OnlineMultimodalClassifier(pl.LightningModule):
         valid_pain = pain_labels != -1
         valid_stim = stim_labels != -1
         pain_coral = self.coral_loss(out["pain_coral"][valid_pain], pain_labels[valid_pain]) if valid_pain.any() else torch.tensor(0.0, device=self.device)
-        stim_coral = self.coral_loss(out["stim_coral"][valid_stim], stim_labels[valid_stim]) if valid_stim.any() else torch.tensor(0.0, device=self.device)
+        stim_coral = self.coral_loss(out["stim_coral"][valid_stim], stim_labels[valid_stim]) if (valid_stim.any() and "stim_coral" in out) else torch.tensor(0.0, device=self.device)
         pain_ce = self._compute_ce_loss(out["pain_ce"][valid_pain], pain_labels[valid_pain]) if (valid_pain.any() and self._use_ce) else torch.tensor(0.0, device=self.device)
-        stim_ce = self._compute_ce_loss(out["stim_ce"][valid_stim], stim_labels[valid_stim]) if (valid_stim.any() and self._use_ce) else torch.tensor(0.0, device=self.device)
+        stim_ce = self._compute_ce_loss(out["stim_ce"][valid_stim], stim_labels[valid_stim]) if (valid_stim.any() and self._use_ce and "stim_ce" in out) else torch.tensor(0.0, device=self.device)
         pain_loss = coral_alpha * pain_coral + ce_alpha * pain_ce
         stim_loss = coral_alpha * stim_coral + ce_alpha * stim_ce
         val_loss = self.hparams.pain_loss_weight * pain_loss + self.hparams.stim_loss_weight * stim_loss

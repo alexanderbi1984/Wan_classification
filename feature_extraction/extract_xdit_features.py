@@ -49,27 +49,12 @@ class FeatureExtractorWanModel(torch.nn.Module):
             Tuple of (output, features) if return_features=True, otherwise just output
         """
         model = self.model
-        
-        # Print shape information for debugging
-        print(f"Input shapes: x={[x_i.shape for x_i in x]}, t={t.shape}")
-        
+
         if len(x) != 1:
-            print(f"WARNING: Expected x to be a list with 1 element, but got {len(x)} elements")
-        
-        # Temporary fix for unpacking error - handle different input shapes
-        try:
-            b, c, f, h, w = x[0].shape
-        except ValueError as e:
-            print(f"NO BATCH DIMENSION: {e}")
-            print(f"x[0] shape: {x[0].shape}")
-            # Try to adapt to different input shapes
-            if len(x[0].shape) == 4:  # Handle case where batch dimension is missing
-                c, f, h, w = x[0].shape
-                b = 1
-                x[0] = x[0].unsqueeze(0)  # Add batch dimension
-                print(f"Adapted shape to: {x[0].shape}")
-            else:
-                raise
+            raise ValueError(f"Expected x to be a list with 1 element, got {len(x)}")
+
+        if x[0].dim() == 4:
+            x[0] = x[0].unsqueeze(0)
         
         # Patchify using the model's patch_embedding layer (as in WanModel.forward)
         x = [model.patch_embedding(x_i) if x_i.dim() == 5 else model.patch_embedding(x_i.unsqueeze(0)) for x_i in x]
@@ -117,10 +102,8 @@ class FeatureExtractorWanModel(torch.nn.Module):
         x = model.unpatchify(x, grid_sizes)
         
         if return_features:
-            print(f"RETURNING FEATURES: {x.shape}, {block_features[0].shape}, {grid_sizes.shape}")
             return x, block_features, grid_sizes
         elif return_temporal_features:
-            print(f"RETURNING TEMPORAL FEATURES: {temporal_features.shape}")
             return x, block_features, grid_sizes, temporal_features
         else:
             return x
@@ -198,31 +181,21 @@ def process_and_save_features(video_path, vae, model, text_encoder, output_path,
         return
     
     video_tensor = torch.stack(frames, dim=1).to(args.device)  # (C, T, H, W)
-    print(f"Video tensor shape: {video_tensor.shape}")
-    
-    # Get VAE latents
+
     with torch.no_grad():
         latents = vae.encode([video_tensor])
-        print(f"VAE latents shape: {[l.shape for l in latents]}")
-    
-    # Prepare model inputs
+
     target_shape = latents[0].shape
-    # Get patch size from the model
     patch_size = model.model.patch_size
-    print(f"Patch size: {patch_size}")
-    
-    # Extract dimensions safely
+
     if len(target_shape) == 5:  # [B, C, F, H, W]
         _, _, F, H, W = target_shape
     elif len(target_shape) == 4:  # [C, F, H, W]
         _, F, H, W = target_shape
     else:
         raise ValueError(f"Unexpected latent shape: {target_shape}")
-    
-    print(f"Extracted dimensions: F={F}, H={H}, W={W}")
-    
+
     seq_len = math.ceil((H * W) / (patch_size[1] * patch_size[2]) * F)
-    print(f"Calculated seq_len: {seq_len}")
     
     # Dynamically detect context dimension
     if hasattr(model.model, 'dim'):
@@ -232,9 +205,6 @@ def process_and_save_features(video_path, vae, model, text_encoder, output_path,
     else:
         # Default fallback dimension - typical for T5 encoder output
         context_dim = 768
-        print(f"Warning: Could not detect context dimension, using default: {context_dim}")
-    
-    print(f"Using context dimension: {context_dim}")
     
     # Get text context (using empty string as we just need the structure)
     if args.use_text_context:
@@ -252,41 +222,32 @@ def process_and_save_features(video_path, vae, model, text_encoder, output_path,
     # Extract features
     with torch.no_grad():
         try:
-            print("Calling model.forward to extract features...")
             if args.return_temporal_features:
                 out, features, grid_sizes, temporal_features = model(
-                    latents, 
-                    t=t, 
-                    context=context, 
+                    latents,
+                    t=t,
+                    context=context,
                     seq_len=seq_len,
                     return_features=False,
                     return_temporal_features=True,
-                    feature_layer=args.feature_layer
+                    feature_layer=args.feature_layer,
                 )
             else:
                 out, features, grid_sizes = model(
-                    latents, 
-                    t=t, 
-                    context=context, 
+                    latents,
+                    t=t,
+                    context=context,
                     seq_len=seq_len,
                     return_features=True,
                     return_temporal_features=False,
-                    feature_layer=args.feature_layer
+                    feature_layer=args.feature_layer,
                 )
-            
-            # Sanity check for output shapes
-            if features is None or len(features) == 0 and not args.return_temporal_features:
+
+            if not args.return_temporal_features and (features is None or len(features) == 0):
                 raise ValueError("Model returned empty features")
-            elif temporal_features is None or len(temporal_features) == 0 and args.return_temporal_features:
+            if args.return_temporal_features and (temporal_features is None or len(temporal_features) == 0):
                 raise ValueError("Model returned empty temporal features")
-            
-            # Check feature shapes (first dimension should match batch size)
-            batch_size = 1  # Assume batch size 1 for single video
-            for i, feat in enumerate(features):
-                print(f"Feature {i} shape: {feat.shape}")
-                if feat.shape[0] != batch_size and args.verbose:
-                    print(f"Warning: Feature {i} has batch dimension {feat.shape[0]}, expected {batch_size}")
-            
+
         except Exception as e:
             print(f"Error extracting features: {e}")
             import traceback

@@ -55,12 +55,13 @@ class BioVidDataset(Dataset):
                 if arr.ndim != 2:
                     raise ValueError(f"TCHW format expects 2D tensor [T,D], got shape {arr.shape}")
                 T, D = arr.shape
-                # Fixed C=3, calculate H=W
-                C = 3
+                C = self.in_channels if hasattr(self, 'in_channels') else 3
+                if D % C != 0:
+                    raise ValueError(f"D={D} is not divisible by C={C}")
                 remaining = D // C
                 H = int(np.sqrt(remaining))
                 if H * H != remaining:
-                    raise ValueError(f"Cannot reshape tensor with D={D} into square spatial dimensions with C={C}")
+                    raise ValueError(f"Cannot reshape D={D} into square spatial dims with C={C} (D/C={remaining} is not a perfect square)")
                 arr = arr.view(T, C, H, H)
                 arr = arr.permute(1, 0, 2, 3)  # [C,T,H,W]
             elif self.input_format == 'CTHW':
@@ -113,12 +114,13 @@ class BioVidDataset(Dataset):
                 if arr.ndim != 2:
                     raise ValueError(f"TCHW format expects 2D tensor [T,D], got shape {arr.shape}")
                 T, D = arr.shape
-                # Fixed C=3, calculate H=W
-                C = 3
+                C = self.in_channels if hasattr(self, 'in_channels') else 3
+                if D % C != 0:
+                    raise ValueError(f"D={D} is not divisible by C={C}")
                 remaining = D // C
                 H = int(np.sqrt(remaining))
                 if H * H != remaining:
-                    raise ValueError(f"Cannot reshape tensor with D={D} into square spatial dimensions with C={C}")
+                    raise ValueError(f"Cannot reshape D={D} into square spatial dims with C={C} (D/C={remaining} is not a perfect square)")
                 arr = arr.view(T, C, H, H)
                 arr = arr.permute(1, 0, 2, 3)  # [C,T,H,W]
             elif self.input_format == 'CTHW':

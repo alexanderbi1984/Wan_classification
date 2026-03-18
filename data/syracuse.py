@@ -303,7 +303,7 @@ class SyracuseDataModule(pl.LightningDataModule):
             if not all(l is not None for l in labels):
                 raise ValueError("Can't use balanced sampling: found None in class labels.")
             label_counts = Counter(labels)
-            class_weights = {cls: 1.0 / cnt for cls, cnt in label_counts.items()}
+            class_weights = {cls: 1.0 / max(cnt, 1) for cls, cnt in label_counts.items()}
             sample_weights = [class_weights[s['class_label']] for s in self.train_dataset.samples]
             sampler = WeightedRandomSampler(sample_weights, len(sample_weights), replacement=True, generator=generator)
             return DataLoader(self.train_dataset, batch_size=self.batch_size, num_workers=self.num_workers,
