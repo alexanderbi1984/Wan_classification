@@ -1,22 +1,21 @@
 # ============================================================================
-# LoRA Fine-tuning: Wan 14B DiT — Binary BL1 vs PA4 @ 256x256 Resolution
+# LoRA Fine-tuning: Wan 14B DiT — 256x256 + Spatial Attention Pooling
 # ============================================================================
-# Combines best binary config (t100+aug3, acc=71.5%) with 256x256 resolution
-# to test whether higher spatial resolution improves BL1 vs PA4 discrimination.
+# Fixes the mean-pooling bottleneck that rendered res256 useless:
+#   OLD: x.mean(dim=[3,4]) averages 16×16=256 spatial tokens blindly
+#   NEW: SpatialAttentionPool learns which spatial positions matter
 #
-# VAE latent: 256/8 = 32x32, DiT tokens: 32/2 = 16x16 = 256 spatial tokens
-# vs baseline 128 -> 8x8 -> 4x4 = 16 spatial tokens (16x more resolution)
+# This is the correct way to test the spatial resolution hypothesis.
 # ============================================================================
 
-run_name: wan_lora_14B_binary_bl1pa4_t100_aug3_res256
+run_name: wan_lora_14B_t100_aug3_res256_spattn
 
 # ---------- Data ----------
 data:
   labels_csv: /data/home/nbi1/BioVid/biovid_pain_labels.csv
   frames_root: /data/home/nbi1/BioVid/biovid_cropped_frames/
-  num_classes: 2
-  class_subset: [0, 4]           # BL1=0 → class 0, PA4=4 → class 1
-  resize: 256                    # 256x256 input
+  num_classes: 5
+  resize: 256
   max_frames: 129
   sample_rate: 2
 
@@ -56,16 +55,12 @@ model_params:
   temporal_encoder_max_len: 512
   temporal_encoder_use_layernorm: false
   temporal_pooling_type: mean
+  spatial_pool: attention          # <<< KEY CHANGE: learnable spatial attention
   label_smoothing: 0.05
   use_distance_penalty: false
   focal_gamma: null
   dit_feature_layer: -1
   dit_timestep: 100.0
-
-  # CORAL loss
-  coral_alpha: 1.0
-  ce_alpha: 0.0
-  eval_head: coral
 
 # ---------- LoRA ----------
 lora_params:
@@ -82,9 +77,9 @@ optimizer_params:
 
 # ---------- Training ----------
 train:
-  batch_size: 4                  # Reduced for 256x256 (4x seq_len)
+  batch_size: 4
   num_workers: 4
-  accumulate_grad_batches: 6     # Effective batch = 4*6 = 24
+  accumulate_grad_batches: 6
   max_epochs: 200
   precision: bf16-mixed
   gradient_clip_val: 1.0

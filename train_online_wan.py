@@ -85,6 +85,7 @@ def build_model(config):
         temporal_encoder_max_len=model_cfg.get("temporal_encoder_max_len", 512),
         temporal_encoder_use_layernorm=model_cfg.get("temporal_encoder_use_layernorm", False),
         temporal_pooling_type=model_cfg.get("temporal_pooling_type", "mean"),
+        spatial_pool=model_cfg.get("spatial_pool", "mean"),
         lr_backbone=optim_cfg.get("lr_backbone", 5e-5),
         lr_head=optim_cfg.get("lr_head", 1e-3),
         weight_decay=optim_cfg.get("weight_decay", 0.01),

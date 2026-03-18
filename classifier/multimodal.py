@@ -92,19 +92,61 @@ class VAEFeatureProcessor(nn.Module):
     #     out = self.proj(feats)  # (B, T, D)
     #     return out
 
-class XDiTFeatureProcessor(nn.Module):
+class SpatialAttentionPool(nn.Module):
+    """Learnable spatial attention pooling over H×W positions.
+
+    Instead of blind mean pooling, learns which spatial positions (e.g. eyes,
+    mouth) are most informative for the downstream task.  Mean pooling is a
+    special case where all attention weights are uniform.
+
+    Args:
+        in_channels: Feature dimension per spatial position.
+        reduction: Channel reduction ratio for the hidden layer (default 4).
     """
-    XDiTFeatureProcessor
-    --------------------
-    Configurable hyperparameters (recommended to manage via Hydra/CLI):
-        - in_channels (int): Number of input channels for the xDiT features.
-        - out_dim (int): Output feature dimension D after projection.
-    Processes xDiT features using Linear + BatchNorm, projects to (B, T, D).
-    BatchNorm is applied independently for each time step in a vectorized way.
-    The projection (linear) layer is explicitly initialized with Xavier uniform.
-    """
-    def __init__(self, in_channels, out_dim):
+
+    def __init__(self, in_channels: int, reduction: int = 4):
         super().__init__()
+        hidden = max(in_channels // reduction, 64)
+        self.attn = nn.Sequential(
+            nn.Linear(in_channels, hidden),
+            nn.Tanh(),
+            nn.Linear(hidden, 1, bias=False),
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Args:
+            x: (B, C, T, H, W) feature map.
+        Returns:
+            (B, C, T) spatially-pooled features.
+        """
+        B, C, T, H, W = x.shape
+        # (B, T, H, W, C) -> (B*T, H*W, C)
+        x_perm = x.permute(0, 2, 3, 4, 1).reshape(B * T, H * W, C)
+        scores = self.attn(x_perm)                  # (BT, HW, 1)
+        weights = torch.softmax(scores, dim=1)       # (BT, HW, 1)
+        pooled = (x_perm * weights).sum(dim=1)       # (BT, C)
+        return pooled.view(B, T, C).permute(0, 2, 1) # (B, C, T)
+
+
+class XDiTFeatureProcessor(nn.Module):
+    """Process xDiT features into per-timestep embeddings.
+
+    Supports two spatial pooling modes:
+        - 'mean': Simple average over H×W (original behavior, good for small grids).
+        - 'attention': Learnable spatial attention (better for larger grids like 16×16).
+
+    Args:
+        in_channels: DiT hidden dimension (e.g. 5120 for 14B).
+        out_dim: Output feature dimension D after projection.
+        spatial_pool: 'mean' or 'attention' (default 'mean' for backward compat).
+    """
+
+    def __init__(self, in_channels, out_dim, spatial_pool='mean'):
+        super().__init__()
+        self.spatial_pool = spatial_pool
+        if spatial_pool == 'attention':
+            self.spatial_attn = SpatialAttentionPool(in_channels)
         self.linear = nn.Linear(in_channels, out_dim)
         self.bn = nn.BatchNorm1d(out_dim)
         nn.init.xavier_uniform_(self.linear.weight)
@@ -112,8 +154,11 @@ class XDiTFeatureProcessor(nn.Module):
 
     def forward(self, x):
         B, C, T, H, W = x.shape
-        x = x.mean(dim=[3, 4])
-        x = x.permute(0, 2, 1)
+        if self.spatial_pool == 'attention':
+            x = self.spatial_attn(x)          # (B, C, T)
+        else:
+            x = x.mean(dim=[3, 4])            # (B, C, T)
+        x = x.permute(0, 2, 1)               # (B, T, C)
         x = x.reshape(B * T, C)
         x = self.linear(x)
         x = self.bn(x)

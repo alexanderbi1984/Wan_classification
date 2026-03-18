@@ -130,6 +130,7 @@ class OnlineMultimodalClassifier(pl.LightningModule):
         temporal_encoder_max_len: int = 512,
         temporal_encoder_use_layernorm: bool = False,
         temporal_pooling_type: str = "mean",
+        spatial_pool: str = "mean",
         lr_backbone: float = 5e-5,
         lr_head: float = 1e-3,
         weight_decay: float = 0.01,
@@ -209,7 +210,10 @@ class OnlineMultimodalClassifier(pl.LightningModule):
 
         # ----- Downstream head (reuses existing components) -----
         self.vae_processor = VAEFeatureProcessor(vae_in_channels, feature_dim)
-        self.xdit_processor = XDiTFeatureProcessor(xdit_in_channels, feature_dim)
+        spatial_pool = self.hparams.get("spatial_pool", "mean")
+        self.xdit_processor = XDiTFeatureProcessor(
+            xdit_in_channels, feature_dim, spatial_pool=spatial_pool
+        )
 
         self.fusion = FeatureFusion(
             in_dim_vae=feature_dim,
