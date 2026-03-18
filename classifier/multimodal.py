@@ -33,8 +33,12 @@ class VAEFeatureProcessor(nn.Module):
         nn.init.zeros_(self.proj.bias)
 
     def forward(self, x):
-        feats = self.resnet3d(x)  # (B, 512, T, H', W')
-        feats = self.pool(feats)  # (B, 512, T, 1, 1)
+        feats = self.resnet3d.stem(x)
+        feats = self.resnet3d.layer1(feats)
+        feats = self.resnet3d.layer2(feats)
+        feats = self.resnet3d.layer3(feats)
+        feats = self.resnet3d.layer4(feats)   # (B, 512, T, H', W')
+        feats = self.pool(feats)              # (B, 512, T, 1, 1)
         feats = feats.squeeze(-1).squeeze(-1).transpose(1, 2)  # (B, T, 512)
         out = self.proj(feats)  # (B, T, D)
         return out
@@ -210,16 +214,28 @@ class TemporalPooling(nn.Module):
     TemporalPooling
     ---------------
     Configurable hyperparameters (recommended to manage via Hydra/CLI):
-        - pooling_type (str): 'mean', 'max', or 'cls'.
+        - pooling_type (str): 'mean', 'max', 'cls', or 'attention'.
+        - input_dim (int): Required when pooling_type='attention'.
     Pools the temporal dimension of a sequence tensor (B, T, D) to (B, D).
     'mean': Mean pooling over T.
     'max': Max pooling over T.
     'cls': Use the first time step (e.g., for transformer with [CLS] token).
+    'attention': Learnable attention weights over timesteps, letting the model
+                 focus on the most informative frames.
     """
-    def __init__(self, pooling_type='mean'):
+    def __init__(self, pooling_type='mean', input_dim=None):
         super().__init__()
-        assert pooling_type in ['mean', 'max', 'cls'], f"Unsupported pooling_type: {pooling_type}"
+        valid_types = ['mean', 'max', 'cls', 'attention']
+        assert pooling_type in valid_types, f"Unsupported pooling_type: {pooling_type}"
         self.pooling_type = pooling_type
+
+        if pooling_type == 'attention':
+            assert input_dim is not None, "input_dim required for attention pooling"
+            self.attn_net = nn.Sequential(
+                nn.Linear(input_dim, input_dim),
+                nn.Tanh(),
+                nn.Linear(input_dim, 1, bias=False),
+            )
 
     def forward(self, x):
         # x: (B, T, D)
@@ -229,6 +245,10 @@ class TemporalPooling(nn.Module):
             return x.max(dim=1)[0]
         elif self.pooling_type == 'cls':
             return x[:, 0, :]
+        elif self.pooling_type == 'attention':
+            scores = self.attn_net(x)                # (B, T, 1)
+            weights = torch.softmax(scores, dim=1)   # (B, T, 1)
+            return (weights * x).sum(dim=1)          # (B, D)
         else:
             raise ValueError(f"Unsupported pooling_type: {self.pooling_type}")
 
