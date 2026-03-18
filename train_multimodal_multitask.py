@@ -20,7 +20,7 @@ except ImportError:
 from data.syracuse import SyracuseDataModule
 from data.biovid import BioVidDataModule
 from data.combined_task_wrapper import CombinedTaskDatasetWrapper
-from data.multimodal import MultimodalDataModule
+from data.multimodal_datasets import SyracuseMultimodalDataModule, BioVidMultimodalDataset
 from classifier.multimodal import MultimodalMultiTaskCoralClassifier
 from torch.utils.data import ConcatDataset, DataLoader
 
@@ -45,6 +45,14 @@ def save_hparams_to_dir(hparams, out_dir, timestamp):
     with open(os.path.join(out_dir, f"hparams_{timestamp}.json"), "w") as f:
         json.dump(hparams, f, indent=4)
 
+def get_concat_index(dataset, idx):
+    if isinstance(dataset, ConcatDataset):
+        for i, ds in enumerate(dataset.datasets):
+            if idx < len(ds):
+                return i, idx
+            idx -= len(ds)
+    return None, idx
+
 def main():
     parser = argparse.ArgumentParser("Multimodal Multi-Task Training & Evaluation (Joint Pain/Stimulus, Syracuse+BioVid)")
     parser.add_argument("--config", type=str, required=True, help="Path to the unified experiment config YAML")
@@ -53,6 +61,7 @@ def main():
     parser.add_argument("--ckpt_path", type=str, default=None, help="Path to load model checkpoint in test mode")
     parser.add_argument("--n_gpus", type=int, default=1, help="Number of GPUs")
     parser.add_argument("--seed", type=int, default=42, help="Random seed (overrides config if set)")
+    parser.add_argument("--strategy", type=str, default="auto", help="Distributed training strategy for PyTorch Lightning Trainer (e.g. 'ddp', 'ddp_spawn', 'auto', 'dp', etc.)")
     args = parser.parse_args()
 
     with open(args.config, "r") as f:
@@ -76,6 +85,7 @@ def main():
     num_workers = trainer_cfg.get("num_workers", 4)
     precision = trainer_cfg.get("precision", "32")
     monitor_metric = trainer_cfg.get("monitor_metric", "val_pain_QWK")
+    monitor_mode = trainer_cfg.get("monitor_mode", "max")
     early_stop_patience = trainer_cfg.get("early_stop_patience", 20)
     max_epochs = trainer_cfg.get("max_epochs", 75)
     model_summary_depth = trainer_cfg.get("model_summary_depth", 2)
@@ -90,6 +100,8 @@ def main():
     seed_to_use = trainer_cfg.get("seed", args.seed)
     torch.manual_seed(seed_to_use)
     pl.seed_everything(seed_to_use)
+    torch.use_deterministic_algorithms(True, warn_only=True)
+
     import os as _os
     _os.environ["PYTHONHASHSEED"] = str(seed_to_use)
 
@@ -98,19 +110,38 @@ def main():
         for fold_idx in range(3):
             print(f"\n=== STARTING FOLD {fold_idx} ===")
             _, logs_dir, ckpt_dir, results_dir, fold_timestamp = get_output_dir(run_name, base_dir, fold_idx)
-            # Setup multimodal data module for this fold
-            multimodal_dm = MultimodalDataModule(
-                syracuse_cfg=syracuse_cfg,
-                biovid_cfg=biovid_cfg,
+            # Setup Syracuse multimodal data module for this fold
+            syracuse_dm = SyracuseMultimodalDataModule(
+                vae_feature_dir=syracuse_cfg["vae_feature_dir"],
+                xdit_feature_dir=syracuse_cfg["xdit_feature_dir"],
+                meta_path=syracuse_cfg["meta_path"],
+                task=syracuse_cfg.get("task", "classification"),
+                thresholds=syracuse_cfg.get("thresholds"),
                 batch_size=batch_size,
                 num_workers=num_workers,
+                cv_fold=fold_idx,
                 seed=seed_to_use,
-                mode=args.mode,
-                fold_idx=fold_idx
+                balanced_sampling=syracuse_cfg.get("balanced_sampling", False),
+                temporal_pooling=syracuse_cfg.get("temporal_pooling", "none"),
+                flatten=syracuse_cfg.get("flatten", False)
             )
-            multimodal_dm.setup()
-            train_loader = multimodal_dm.train_dataloader()
-            val_loader = multimodal_dm.val_dataloader()
+            syracuse_dm.setup()
+            # For BioVid, use the dataset directly (or a DataModule if you have one)
+            biovid_multimodal_ds = BioVidMultimodalDataset(
+                vae_feature_dir=biovid_cfg["vae_feature_dir"],
+                xdit_feature_dir=biovid_cfg["xdit_feature_dir"],
+                meta_path=biovid_cfg["meta_path"],
+                temporal_pooling=biovid_cfg.get("temporal_pooling", "none"),
+                flatten=biovid_cfg.get("flatten", False)
+            )
+            wrapped_syracuse = CombinedTaskDatasetWrapper(syracuse_dm.train_dataset, task_name='pain_level', multimodal=True)
+            wrapped_biovid = CombinedTaskDatasetWrapper(biovid_multimodal_ds, task_name='stimulus', multimodal=True)
+            sample = wrapped_biovid[0]
+            train_ds = ConcatDataset([wrapped_syracuse, wrapped_biovid])
+            train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True, num_workers=num_workers)
+            # For validation, use only Syracuse val split
+            wrapped_syracuse_val = CombinedTaskDatasetWrapper(syracuse_dm.val_dataset, task_name='pain_level', multimodal=True)
+            val_loader = DataLoader(wrapped_syracuse_val, batch_size=batch_size, shuffle=False, num_workers=num_workers)
             # Model instantiation
             model_cfg = config.get("model_params", {})
             optimizer_cfg = config.get("optimizer_params", {})
@@ -138,13 +169,13 @@ def main():
                 save_last=True,
                 filename=checkpoint_name + "-{epoch}-{" + monitor_metric + ":.3f}",
                 monitor=monitor_metric,
-                mode="max" if "QWK" in monitor_metric else "min",
+                mode=monitor_mode,
                 save_top_k=1,
                 verbose=True
             )
             early_stop_callback = EarlyStopping(
                 monitor=monitor_metric,
-                mode="max" if "QWK" in monitor_metric else "min",
+                mode=monitor_mode,
                 patience=early_stop_patience,
                 verbose=True
             )
@@ -177,8 +208,10 @@ def main():
                 num_sanity_val_steps=0,
                 enable_progress_bar=True,
                 enable_model_summary=True,
-                deterministic=True,
-                profiler=trainer_cfg.get("profiler", None)
+                deterministic=False,
+                #deterministic=True,
+                profiler=trainer_cfg.get("profiler", None),
+                strategy=args.strategy
             )
             trainer.fit(model, train_dataloaders=train_loader, val_dataloaders=val_loader)
             if val_loader:
@@ -191,23 +224,44 @@ def main():
     else:
         # Regular train or test mode
         _, logs_dir, ckpt_dir, results_dir, timestamp = get_output_dir(run_name, base_dir)
-        multimodal_dm = MultimodalDataModule(
-            syracuse_cfg=syracuse_cfg,
-            biovid_cfg=biovid_cfg,
+        syracuse_dm = SyracuseMultimodalDataModule(
+            vae_feature_dir=syracuse_cfg["vae_feature_dir"],
+            xdit_feature_dir=syracuse_cfg["xdit_feature_dir"],
+            meta_path=syracuse_cfg["meta_path"],
+            task=syracuse_cfg.get("task", "classification"),
+            thresholds=syracuse_cfg.get("thresholds"),
             batch_size=batch_size,
             num_workers=num_workers,
+            cv_fold=syracuse_cfg.get("cv_fold", 0),
             seed=seed_to_use,
-            mode=args.mode,
-            fold_idx=syracuse_cfg.get("cv_fold", 0)
+            balanced_sampling=syracuse_cfg.get("balanced_sampling", False),
+            temporal_pooling=syracuse_cfg.get("temporal_pooling", "none"),
+            flatten=syracuse_cfg.get("flatten", False)
         )
-        multimodal_dm.setup()
-        train_loader = multimodal_dm.train_dataloader()
-        val_loader = multimodal_dm.val_dataloader()
+        syracuse_dm.setup()
+        biovid_multimodal_ds = BioVidMultimodalDataset(
+            vae_feature_dir=biovid_cfg["vae_feature_dir"],
+            xdit_feature_dir=biovid_cfg["xdit_feature_dir"],
+            meta_path=biovid_cfg["meta_path"],
+            temporal_pooling=biovid_cfg.get("temporal_pooling", "none"),
+            flatten=biovid_cfg.get("flatten", False)
+        )
+        wrapped_syracuse = CombinedTaskDatasetWrapper(syracuse_dm.train_dataset, task_name='pain_level', multimodal=True)
+        wrapped_biovid = CombinedTaskDatasetWrapper(biovid_multimodal_ds, task_name='stimulus', multimodal=True)
+        sample = wrapped_biovid[0]
+        train_ds = ConcatDataset([wrapped_syracuse, wrapped_biovid])
+        train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True, num_workers=num_workers)
+        wrapped_syracuse_val = CombinedTaskDatasetWrapper(syracuse_dm.val_dataset, task_name='pain_level', multimodal=True)
+        val_loader = DataLoader(wrapped_syracuse_val, batch_size=batch_size, shuffle=False, num_workers=num_workers)
+        # Model instantiation
         model_cfg = config.get("model_params", {})
         optimizer_cfg = config.get("optimizer_params", {})
         lr_scheduler_cfg = config.get("lr_scheduler_params", {})
         hparams_model = {**model_cfg, **optimizer_cfg}
-        if lr_scheduler_cfg.get("use_scheduler", False):
+        # Remove 'optimizer' key if present, use 'optimizer_name' instead
+        if 'optimizer' in hparams_model:
+            hparams_model['optimizer_name'] = hparams_model.pop('optimizer')
+        if lr_scheduler_cfg.get("use_lr_scheduler", False):
             hparams_model.update({
                 "use_lr_scheduler": True,
                 "lr_factor": lr_scheduler_cfg.get("factor", 0.1),
@@ -228,13 +282,13 @@ def main():
             save_last=True,
             filename=checkpoint_name + "-{epoch}-{" + monitor_metric + ":.3f}",
             monitor=monitor_metric,
-            mode="max" if "QWK" in monitor_metric else "min",
+            mode=monitor_mode,
             save_top_k=1,
             verbose=True
         )
         early_stop_callback = EarlyStopping(
             monitor=monitor_metric,
-            mode="max" if "QWK" in monitor_metric else "min",
+            mode=monitor_mode,
             patience=early_stop_patience,
             verbose=True
         )
@@ -268,7 +322,8 @@ def main():
             enable_progress_bar=True,
             enable_model_summary=True,
             deterministic=True,
-            profiler=trainer_cfg.get("profiler", None)
+            profiler=trainer_cfg.get("profiler", None),
+            strategy=args.strategy
         )
         if args.mode == "train":
             trainer.fit(model, train_dataloaders=train_loader, val_dataloaders=val_loader)
