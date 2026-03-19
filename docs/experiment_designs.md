@@ -445,3 +445,56 @@ Motivated by the performance plateau at Test QWK≈0.407. This phase explores wh
 | Loading Strategy | Sequential (load/infer/unload one model at a time) |
 | GPU | Single H100, batch_size=24 |
 | **Rationale** | Combine diverse models with different configurations to capture complementary patterns. |
+
+---
+
+## Phase 9: 256×256 Resolution + Spatial Attention Pooling
+
+### Motivation
+
+Grad-CAM analysis (Phase 8.5) revealed that at 128×128 input, the Wan DiT compresses spatial information to a 4×4 grid — too coarse for facial micro-expression detection. Higher-resolution (256×256) input increases the grid to 16×16, but the original `XDiTFeatureProcessor` used `x.mean(dim=[3,4])`, averaging all 256 spatial tokens into a single vector. This **blind spatial mean pooling** was identified as the critical architectural bottleneck preventing higher resolution from benefiting performance.
+
+### Solution: `SpatialAttentionPool`
+
+A lightweight learnable attention module replaces mean pooling:
+
+```
+SpatialAttentionPool(in_channels=5120, reduction=4):
+    Linear(5120, 1280) → Tanh → Linear(1280, 1) → Softmax(H*W) → Weighted Sum
+```
+
+This allows the model to learn **which spatial positions carry discriminative information** (e.g., eye, nose, mouth regions vs. background).
+
+### Experiment 27: 5-Class — res256 + SpatAttn (Job 29682897, In Progress)
+
+| Parameter | Value |
+|-----------|-------|
+| Config | `config_pain/config_lora_t100_aug3_res256_spattn.yaml` |
+| Input Resolution | **256×256** (vs 128×128 baseline) |
+| Spatial Pooling | **SpatialAttentionPool** (learnable) |
+| DiT Timestep | 100 |
+| LoRA Rank | 4 |
+| Loss | CORAL ordinal |
+| Augmentation | aug3 |
+| Batch size | 24 |
+| GPUs | 4 × H100 (DDP) |
+| MASTER_PORT | 29525 |
+| **Rationale** | Test whether spatial attention unlocks benefits of higher resolution for 5-class ordinal classification. |
+
+### Experiment 28: Binary BL1 vs PA4 — res256 + SpatAttn (Job 29682898) — NEW BEST
+
+| Parameter | Value |
+|-----------|-------|
+| Config | `config_pain/config_lora_binary_bl1_pa4_t100_aug3_res256_spattn.yaml` |
+| Input Resolution | **256×256** |
+| Spatial Pooling | **SpatialAttentionPool** (learnable) |
+| DiT Timestep | 100 |
+| LoRA Rank | 4 |
+| Loss | CORAL ordinal (binary: K=2, 1 threshold) |
+| Augmentation | aug3 |
+| Class Subset | [0, 4] (BL1 vs PA4 only) |
+| Batch size | 24 |
+| GPUs | 4 × H100 (DDP) |
+| MASTER_PORT | 29526 |
+| **Result** | **Test QWK=0.477, Acc=75.3%, F1=0.732, BL1 Recall=87.2%** — new project-wide best |
+| **Rationale** | Test the spatial attention hypothesis on the highest-separability binary pair. |
